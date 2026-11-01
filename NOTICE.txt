@@ -1,0 +1,38 @@
+Serial ESP Helper
+Application source: https://github.com/Bokbacken/MyESPSerialTool
+Application license: MIT (see LICENSE).
+
+This program uses unmodified, dynamically linked Qt 6.8.3:
+Qt Core, Qt GUI, Qt Widgets and Qt Serial Port.
+Copyright The Qt Company Ltd. and other Qt contributors.
+The distributed Qt libraries are used under GNU LGPL version 3.
+Qt Serial Port and the selected Qt Base modules permit LGPLv3 use;
+no GPL-only application module is required.
+
+The portable ZIP includes licenses/qtbase and licenses/qtserialport with
+LGPLv3, GPLv3 (incorporated by LGPLv3), and third-party license texts.
+Corresponding Qt sources, third-party copyright notices and build files are
+provided in sources/qt-6.8.3-sources.tar.xz in that same ZIP.
+Third-party component attribution is recorded in Qt's source
+src/3rdparty/*/qt_attribution.json files and accompanying source headers.
+
+You may replace the Qt DLLs with compatible modified versions. Reverse
+engineering for debugging modifications to those libraries is permitted.
+Do not remove the license texts or corresponding-source archive when
+redistributing the portable ZIP. If deploying another Qt build, replace
+the sources and notices with those corresponding to that build.
+
+Microsoft Visual C++ app-local redistributable DLLs are included in Windows
+packages under Microsoft's redistribution terms; they are not covered by
+the application's MIT license or Qt's LGPL. Windows itself and USB device
+drivers are not included. Microsoft runtime redistribution terms:
+https://visualstudio.microsoft.com/license-terms/vs2022-cruntime/
+
+Packaging references:
+https://doc.qt.io/qt-6/licensing.html
+https://doc.qt.io/qt-6/qtserialport-index.html
+https://doc.qt.io/qt-6/windows-deployment.html
+https://www.qt.io/development/open-source-lgpl-obligations
+
+This is a distribution design, not legal advice. A distributor must review
+the actual shipped components, their notices and source correspondence.
