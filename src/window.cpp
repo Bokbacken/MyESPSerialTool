@@ -286,7 +286,7 @@ void SessionWindow::advanced() {
     const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog"};
     const QList<QPair<QString, QString>> fields = {
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
-        {"autoConnect", "Connect when opening this profile window (explicit opt-in)"},
+        {"autoConnect", "Connect on window open and retry failed initial opens (explicit opt-in)"},
         {"flowControl", "Flow control"},         {"dtr", "DTR (applied on open, independent of read-only)"},
         {"rts", "RTS (applied on open unless hardware flow manages it)"},
         {"writeTimeoutMs", "Write completion timeout (100–60000 ms)"},

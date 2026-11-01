@@ -52,11 +52,17 @@ egna villkor. Detta är inte juridisk rådgivning.
 
 ### Automatisk anslutning och profiler
 
-Öppna **Advanced…** och aktivera automatisk anslutning om profilen ska ansluta
-när dess fönster öppnas och försöka återansluta efter frånkoppling. Spara
-profilen för att behålla valet. Standard är av: ett klick på **Connect / Resume**
-gör då ett anslutningsförsök, och ett nytt klick krävs efter en frånkoppling.
-En manuell paus blockerar återanslutning även när automatisk anslutning är på.
+När en profil väl har anslutit återansluter sessionen automatiskt efter
+frånkoppling eller omstart av enheten. Detta gäller även om automatisk anslutning
+är avstängd. **Manual pause** blockerar återanslutning tills du uttryckligen
+klickar **Connect / Resume** igen.
+
+Öppna **Advanced…** och aktivera automatisk anslutning om profilen dessutom ska
+ansluta när dess fönster öppnas och försöka igen om den första anslutningen
+misslyckas. Spara profilen för att behålla valet. Standard är av: fönstret
+ansluter inte vid start, och ett manuellt första anslutningsförsök görs en gång
+om porten inte kan öppnas. Återförsök efter att en session har varit ansluten
+begränsas av profilens `retryLimit`.
 
 När enheten har ett USB-serienummer och VID/PID binds profilen till den
 identiteten första gången den ansluter. Då följer återanslutningen enheten även

@@ -122,6 +122,7 @@ void SessionWorker::configure(const Profile &p, const QString &directory) {
     stopping = true; transport->close(); writeTimer->stop();
     stopLog("settings reconfigured");
     stopping = false; settings = checked; logDirectory = directory; attempts = 0;
+    reconnectAfterLoss = false;
     lastProblem.clear(); transition(SessionState::Disconnected);
 }
 void SessionWorker::monitor() {
@@ -140,6 +141,7 @@ void SessionWorker::resume() {
 void SessionWorker::pause() {
     initialize(); writeTimer->stop();
     stopping = true; transport->close(); stopping = false;
+    reconnectAfterLoss = false;
     stopLog("manually paused");
     transition(SessionState::ManuallyPaused);
 }
@@ -187,10 +189,11 @@ void SessionWorker::poll() {
                                   : "Selected device moved to another port");
     }
     if (current != SessionState::Waiting) return;
+    const bool shouldReconnect = settings.autoConnect || reconnectAfterLoss;
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");
-        if (!settings.autoConnect) transition(SessionState::Disconnected);
+        if (!shouldReconnect) transition(SessionState::Disconnected);
         return;
     }
     const auto chosen = matches.first();
@@ -200,7 +203,7 @@ void SessionWorker::poll() {
             if (p.serial == chosen.serial && p.vid == chosen.vid && p.pid == chosen.pid) ++duplicates;
         if (duplicates != 1) {
             report("Ambiguous newly discovered USB identity; refusing to bind or open any port");
-            if (!settings.autoConnect) transition(SessionState::Disconnected);
+            if (!shouldReconnect) transition(SessionState::Disconnected);
             return;
         }
         settings.usbSerial = chosen.serial; settings.vid = chosen.vid; settings.pid = chosen.pid;
@@ -216,13 +219,14 @@ void SessionWorker::poll() {
     opening = false;
     if (ok) {
         attempts = 0; lastProblem.clear();
+        reconnectAfterLoss = true;
         logger->enqueueEvent("connected " + chosen.port, QDateTime::currentDateTimeUtc());
         transition(SessionState::Connected);
     } else {
         report(QString("Open failed (%1/%2): %3").arg(attempts).arg(settings.retryLimit).arg(error));
         logger->enqueueEvent("open failed: " + error, QDateTime::currentDateTimeUtc());
-        if (attempts >= settings.retryLimit || !settings.autoConnect) {
-            stopLog(!settings.autoConnect ? "open failed; automatic reconnect disabled" : "retry limit reached");
+        if (attempts >= settings.retryLimit || !shouldReconnect) {
+            stopLog(!shouldReconnect ? "open failed; automatic reconnect disabled" : "retry limit reached");
             transition(SessionState::Disconnected);
             emit problem("Connection stopped. Press Connect / Resume to try again.");
         } else transition(SessionState::Waiting);
@@ -233,8 +237,9 @@ void SessionWorker::lost(const QString &message) {
     if (logger) logger->enqueueEvent("interruption: " + message, QDateTime::currentDateTimeUtc());
     writeTimer->stop(); stopping = true; transport->close(); stopping = false;
     if (current != SessionState::ManuallyPaused && current != SessionState::Loaned) {
-        attempts = 0; transition(settings.autoConnect ? SessionState::Waiting : SessionState::Disconnected);
-        if (!settings.autoConnect) stopLog("interrupted; automatic reconnect disabled");
+        const bool shouldReconnect = settings.autoConnect || reconnectAfterLoss;
+        attempts = 0; transition(shouldReconnect ? SessionState::Waiting : SessionState::Disconnected);
+        if (!shouldReconnect) stopLog("interrupted; automatic reconnect disabled");
         if (!pollTimer->isActive()) pollTimer->start();
     }
 }

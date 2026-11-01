@@ -232,7 +232,7 @@ private slots:
         auto *fake = new FakeSerial;
         fake->devices = {{"COM3", "", "ABC", 10, 20}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "COM3"; p.autoConnect = true;
+        Profile p; p.port = "COM3";
         worker.configure(p, d.path); worker.resume(); worker.poll();
         QCOMPARE(worker.state(), SessionState::Connected);
 
@@ -247,6 +247,15 @@ private slots:
         worker.poll();
         QCOMPARE(worker.state(), SessionState::Connected);
         QCOMPARE(fake->openedNames.last(), QString("COM9"));
+        QCOMPARE(fake->openCalls, 2);
+
+        worker.pause();
+        fake->devices.clear();
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::ManuallyPaused);
+        fake->devices = {{"COM9", "", "ABC", 10, 20}};
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::ManuallyPaused);
         QCOMPARE(fake->openCalls, 2);
     }
     void twoChannelsReadOnlyAndMailboxBound() {
@@ -411,8 +420,13 @@ private slots:
         fake->devices.removeLast();
         worker.resume(); worker.poll();
         QCOMPARE(fake->openCalls, 1); QCOMPARE(worker.profile().usbSerial, QString("DUP"));
-        fake->unplug(); QCOMPARE(worker.state(), SessionState::Disconnected);
+        fake->unplug();
+        QCOMPARE(worker.state(), SessionState::Waiting);
+        fake->devices = {{"COM3", "", "DUP", 10, 20}, {"COM8", "", "DUP", 10, 20}};
         worker.poll(); QCOMPARE(fake->openCalls, 1);
+        fake->devices.removeLast();
+        worker.poll(); QCOMPARE(fake->openCalls, 2);
+        QCOMPARE(fake->openedNames.last(), QString("COM3"));
     }
     void manualOpenFailureDoesNotAutomaticallyRetry() {
         ArtifactDirectory d;

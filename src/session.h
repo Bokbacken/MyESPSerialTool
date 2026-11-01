@@ -92,7 +92,7 @@ private:
     QString logDirectory, lastProblem;
     SessionState current = SessionState::Disconnected;
     int attempts = 0;
-    bool initialized = false, opening = false, stopping = false;
+    bool initialized = false, opening = false, stopping = false, reconnectAfterLoss = false;
     LogWorker *logger = nullptr;
     void initialize();
     void transition(SessionState state);
