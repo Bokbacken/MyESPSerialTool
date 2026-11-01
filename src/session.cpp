@@ -173,7 +173,6 @@ void SessionWorker::poll() {
     QStringList names;
     for (const auto &p : available) names << p.port;
     emit portsAvailable(names);
-    if (current != SessionState::Waiting) return;
     QList<PortIdentity> matches;
     for (const auto &p : available) {
         if (!settings.usbSerial.isEmpty()) {
@@ -181,6 +180,13 @@ void SessionWorker::poll() {
                 matches << p;
         } else if (p.port == settings.port || ("/dev/" + p.port) == settings.port) matches << p;
     }
+    if (current == SessionState::Connected) {
+        if (matches.size() == 1 && matches.first().port == settings.port) return;
+        lost(matches.isEmpty() ? "Selected device disappeared"
+             : matches.size() > 1 ? "Selected USB identity became ambiguous"
+                                  : "Selected device moved to another port");
+    }
+    if (current != SessionState::Waiting) return;
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");

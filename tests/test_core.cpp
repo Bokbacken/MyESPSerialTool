@@ -227,6 +227,28 @@ private slots:
         QCOMPARE(fake->openCalls, 4); QCOMPARE(worker.state(), SessionState::Disconnected);
         worker.resume(); worker.poll(); QCOMPARE(fake->openCalls, 5);
     }
+    void reconnectsWhenDeviceReturnsWithoutTransportError() {
+        ArtifactDirectory d;
+        auto *fake = new FakeSerial;
+        fake->devices = {{"COM3", "", "ABC", 10, 20}};
+        SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
+        Profile p; p.port = "COM3"; p.autoConnect = true;
+        worker.configure(p, d.path); worker.resume(); worker.poll();
+        QCOMPARE(worker.state(), SessionState::Connected);
+
+        const int closesBeforeDisconnect = fake->closeCalls;
+        fake->devices.clear();
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::Waiting);
+        QVERIFY(!fake->isOpen());
+        QCOMPARE(fake->closeCalls, closesBeforeDisconnect + 1);
+
+        fake->devices = {{"COM9", "", "ABC", 10, 20}};
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::Connected);
+        QCOMPARE(fake->openedNames.last(), QString("COM9"));
+        QCOMPARE(fake->openCalls, 2);
+    }
     void twoChannelsReadOnlyAndMailboxBound() {
         ArtifactDirectory d;
         auto first = std::make_shared<DisplayBuffer>(), second = std::make_shared<DisplayBuffer>();
