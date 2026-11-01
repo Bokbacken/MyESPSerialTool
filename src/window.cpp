@@ -68,6 +68,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     profiles = new QComboBox;
     profiles->setObjectName("profiles");
     auto *newProfile = new QPushButton("New profile");
+    newProfile->setObjectName("newProfile");
     auto *save = new QPushButton("Save profile");
     auto *newWindow = new QPushButton("New window");
     auto *chooseConfig = new QPushButton("Save INI as…");
@@ -81,8 +82,11 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     for (int rate : {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600})
         baud->addItem(QString::number(rate));
     readOnly = new QCheckBox("Read-only");
+    readOnly->setObjectName("readOnly");
     auto *advancedButton = new QPushButton("Advanced…");
+    advancedButton->setObjectName("advanced");
     auto *connectButton = new QPushButton("Connect / Resume");
+    connectButton->setObjectName("connectButton");
     auto *pauseButton = new QPushButton("Manual pause");
     connectionRow->addWidget(new QLabel("Port")); connectionRow->addWidget(port, 1);
     connectionRow->addWidget(new QLabel("Baud")); connectionRow->addWidget(baud);
@@ -92,6 +96,8 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     auto *identityRow = new QHBoxLayout;
     identity = new QLabel; identity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *forget = new QPushButton("Forget USB binding");
+    forget->setObjectName("forgetBinding");
+    connectionEditors = {profiles, newProfile, port, baud, advancedButton, forget, connectButton};
     identityRow->addWidget(identity, 1); identityRow->addWidget(forget);
     layout->addLayout(identityRow);
     status = new QLabel("Disconnected"); status->setObjectName("sessionState");
@@ -130,13 +136,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     refreshProfiles(); loadProfile(p);
     worker->moveToThread(&thread);
     connect(&thread, &QThread::finished, worker, &QObject::deleteLater);
-    connect(worker, &SessionWorker::stateChanged, this, [this](SessionState s) {
-        state = s; status->setText(stateName(s));
-        sendButton->setEnabled(s == SessionState::Connected && !settings.readOnly);
-        if (s != SessionState::Connected && s != SessionState::Connecting) {
-            render(); terminal->finish(); view->setHtml(terminal->html());
-        }
-    });
+    connect(worker, &SessionWorker::stateChanged, this, &SessionWindow::applyState);
     connect(worker, &SessionWorker::problem, this, &SessionWindow::addEvent);
     connect(worker, &SessionWorker::portsAvailable, this, [this](const QStringList &ports) {
         availablePorts = ports; refreshPorts();
@@ -200,18 +200,33 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     connect(sendButton, &QPushButton::clicked, this, &SessionWindow::sendMessage);
     connect(sendText->lineEdit(), &QLineEdit::returnPressed, this, &SessionWindow::sendMessage);
     connect(readOnly, &QCheckBox::toggled, this, [this](bool checked) {
-        sendButton->setEnabled(state == SessionState::Connected && !checked && !settings.readOnly);
-        if (checked != settings.readOnly && state == SessionState::Connected) {
-            QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
-            addEvent("Read-only mode changed: paused. Connect to apply the new open mode.");
-        }
+        settings.readOnly = checked;
+        sendButton->setEnabled(state == SessionState::Connected && !checked);
+        QMetaObject::invokeMethod(worker, [worker = worker, checked] { worker->setReadOnly(checked); },
+                                  Qt::QueuedConnection);
+        addEvent("Read-only send gate changed without opening/closing the port or touching DTR/RTS.");
     });
     renderTimer = new QTimer(this); renderTimer->setInterval(50);
     connect(renderTimer, &QTimer::timeout, this, &SessionWindow::render); renderTimer->start();
     connect(&thread, &QThread::started, worker, &SessionWorker::monitor);
     thread.start();
     addEvent("Stage 1: event-driven serial. Manual pause releases the port and suppresses reconnect.");
-    addEvent("Read-only never calls DTR/RTS setters; OS/adapter opening may still affect physical lines.");
+    addEvent("DTR/RTS are explicit connection settings, independent of read-only send gating.");
+    addEvent("OS/adapter opening or closing may pulse physical lines. Read-only toggles never reopen the port.");
+    if (p.autoConnect) QTimer::singleShot(0, this, &SessionWindow::connectSession);
+}
+void SessionWindow::applyState(SessionState s) {
+    state = s; status->setText(stateName(s));
+    const bool active = s == SessionState::Waiting || s == SessionState::Connecting
+        || s == SessionState::Connected || s == SessionState::Loaned;
+    for (QWidget *editor : connectionEditors) {
+        editor->setEnabled(!active);
+        editor->setToolTip(active ? "Manual pause before editing connection settings" : "");
+    }
+    sendButton->setEnabled(s == SessionState::Connected && !settings.readOnly);
+    if (s != SessionState::Connected && s != SessionState::Connecting) {
+        render(); terminal->finish(); view->setHtml(terminal->html());
+    }
 }
 SessionWindow::~SessionWindow() {
     renderTimer->stop();
@@ -268,21 +283,23 @@ void SessionWindow::advanced() {
     const QMap<QString, QStringList> options = {
         {"dataBits", {"5", "6", "7", "8"}}, {"parity", {"none", "even", "odd", "space", "mark"}},
         {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}}};
-    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata"};
+    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog"};
     const QList<QPair<QString, QString>> fields = {
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
-        {"flowControl", "Flow control"}, {"dtr", "DTR (not set in read-only)"},
-        {"rts", "RTS (not set in read-only / hardware flow)"},
+        {"autoConnect", "Connect when opening this profile window (explicit opt-in)"},
+        {"flowControl", "Flow control"},         {"dtr", "DTR (applied on open, independent of read-only)"},
+        {"rts", "RTS (applied on open unless hardware flow manages it)"},
         {"writeTimeoutMs", "Write completion timeout (100–60000 ms)"},
         {"retryLimit", "Open retries per outage (1–100, at 1 Hz)"},
         {"terminalRows", "Maximum terminal rows (10–10000)"},
         {"lineColumns", "Wrap at columns (32–16384; total cells capped at 1 Mi)"},
-        {"logging", "Exact raw receive logging"},
+        {"logging", "Exact raw receive logging (session metadata is always recorded)"},
         {"logDirectory", "Log directory (relative to INI)"},
         {"logBytes", "Raw segment size (1–1073741824 bytes)"},
         {"logRetention", "Completed segments retained (1–100)"},
         {"logQueueBytes", "Disk queue byte limit (1–67108864)"},
-        {"timestampMetadata", "Separate reception UTC metadata (not device time)"}};
+        {"timestampMetadata", "Separate reception UTC raw-offset metadata (not device time)"},
+        {"textLog", "Optional readable timestamped UTF-8 .text (with raw logging)"}};
     for (const auto &field : fields) {
         QWidget *editor;
         if (options.contains(field.first)) {
@@ -290,13 +307,12 @@ void SessionWindow::advanced() {
             combo->setCurrentText(values[field.first]); editor = combo;
         } else if (flags.contains(field.first)) {
             auto *box = new QCheckBox; box->setChecked(values[field.first] == "true"); editor = box;
-            if (field.first == "dtr" || field.first == "rts") box->setEnabled(!settings.readOnly);
         } else editor = new QLineEdit(values[field.first]);
         editors[field.first] = editor; form->addRow(field.second, editor);
     }
     auto *flow = qobject_cast<QComboBox *>(editors["flowControl"]);
     auto *rts = qobject_cast<QCheckBox *>(editors["rts"]);
-    auto updateRts = [this, flow, rts] { rts->setEnabled(!settings.readOnly && flow->currentText() != "hardware"); };
+    auto updateRts = [flow, rts] { rts->setEnabled(flow->currentText() != "hardware"); };
     connect(flow, &QComboBox::currentTextChanged, &dialog, updateRts); updateRts();
     layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -325,6 +341,8 @@ void SessionWindow::connectSession() {
     if (settings.port.isEmpty() && settings.usbSerial.isEmpty()) {
         addEvent("Select or type a port before connecting."); return;
     }
+    // Lock immediately, before the queued worker request can race another UI edit.
+    applyState(SessionState::Waiting);
     terminal->finish();
     const Profile p = settings;
     if (!p.logging) { logStatus->setStyleSheet(""); logStatus->setText("Raw logging disabled"); }
@@ -374,6 +392,9 @@ void SessionWindow::addEvent(const QString &message) {
         logStatus->setStyleSheet("QLabel { color:#d03030; font-weight:bold; }");
     } else if (message.startsWith("Raw capture:")) {
         logStatus->setText("Exact raw receive logging enabled; capture path shown below. Metadata uses reception time.");
+        logStatus->setStyleSheet("");
+    } else if (message.startsWith("Session metadata:")) {
+        logStatus->setText("Session metadata recording enabled; path shown below.");
         logStatus->setStyleSheet("");
     }
     events->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") + " " + message);

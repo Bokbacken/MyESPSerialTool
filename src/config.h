@@ -9,9 +9,10 @@ struct Profile {
     int baud = 115200, dataBits = 8, vid = -1, pid = -1;
     QString parity = QStringLiteral("none"), stopBits = QStringLiteral("1");
     QString flowControl = QStringLiteral("none"), newline = QStringLiteral("lf");
-    bool readOnly = false, dtr = false, rts = false, localEcho = false, follow = true;
+    bool readOnly = true, dtr = false, rts = false, localEcho = false, follow = true;
+    bool autoConnect = false;
     int writeTimeoutMs = 2000, retryLimit = 5, terminalRows = 2000, lineColumns = 4096;
-    bool logging = false, timestampMetadata = false;
+    bool logging = false, timestampMetadata = false, textLog = false;
     QString logDirectory = QStringLiteral("logs");
     qint64 logBytes = 10485760, logQueueBytes = 4194304;
     int logRetention = 5;

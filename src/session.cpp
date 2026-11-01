@@ -44,8 +44,8 @@ bool QtSerialTransport::open(const QString &name, const Profile &p, QString &err
     bool ok = port.setBaudRate(p.baud) && port.setDataBits(QSerialPort::DataBits(p.dataBits))
         && port.setParity(parity.value(p.parity)) && port.setStopBits(stops.value(p.stopBits))
         && port.setFlowControl(flow.value(p.flowControl))
-        && port.open(p.readOnly ? QIODevice::ReadOnly : QIODevice::ReadWrite);
-    if (ok && !p.readOnly) {
+        && port.open(QIODevice::ReadWrite);
+    if (ok) {
         ok = port.setDataTerminalReady(p.dtr);
         if (ok && p.flowControl != "hardware") ok = port.setRequestToSend(p.rts);
     }
@@ -104,7 +104,7 @@ void SessionWorker::initialize() {
     connect(transport, &SerialTransport::received, this, [this](const QByteArray &bytes) {
         if (bytes.isEmpty()) return;
         const auto received = QDateTime::currentDateTimeUtc();
-        if (logger) logger->enqueue(bytes, received);
+        if (logger && settings.logging) logger->enqueue(bytes, received);
         if (display) display->append(bytes);
     });
 }
@@ -120,7 +120,7 @@ void SessionWorker::configure(const Profile &p, const QString &directory) {
     Profile checked; QString error;
     if (!Profile::fromValues(p.name, p.values(), checked, error)) { report(error); return; }
     stopping = true; transport->close(); writeTimer->stop();
-    if (logger) { logger->shutdown(); delete logger; logger = nullptr; }
+    stopLog("settings reconfigured");
     stopping = false; settings = checked; logDirectory = directory; attempts = 0;
     lastProblem.clear(); transition(SessionState::Disconnected);
 }
@@ -140,11 +140,20 @@ void SessionWorker::resume() {
 void SessionWorker::pause() {
     initialize(); writeTimer->stop();
     stopping = true; transport->close(); stopping = false;
+    stopLog("manually paused");
     transition(SessionState::ManuallyPaused);
 }
+void SessionWorker::setReadOnly(bool readOnly) {
+    settings.readOnly = readOnly;
+    if (logger) logger->enqueueEvent(readOnly ? "read-only send gate enabled" : "read-only send gate disabled",
+                                      QDateTime::currentDateTimeUtc());
+}
+void SessionWorker::stopLog(const QString &reason) {
+    if (!logger) return;
+    logger->shutdown(reason, QDateTime::currentDateTimeUtc()); delete logger; logger = nullptr;
+}
 void SessionWorker::startLog() {
-    if (logger) { logger->shutdown(); delete logger; logger = nullptr; }
-    if (!settings.logging) return;
+    if (logger) return;
     QString safe = settings.name;
     safe.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
     const QString base = QDir(logDirectory).filePath(safe + "-"
@@ -153,8 +162,10 @@ void SessionWorker::startLog() {
     logger = new LogWorker(settings, base, this);
     connect(logger, &LogWorker::fault, this, &SessionWorker::problem);
     logger->start();
-    emit problem("Raw capture: " + base + ".raw"
-        + (settings.timestampMetadata ? " (reception UTC metadata in separate .meta)" : ""));
+    emit problem("Session metadata: " + base + ".session");
+    if (settings.logging) emit problem("Raw capture: " + base + ".raw"
+        + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : "")
+        + (settings.textLog ? " (readable reception-UTC UTF-8 in .text)" : ""));
 }
 void SessionWorker::poll() {
     initialize();
@@ -173,34 +184,51 @@ void SessionWorker::poll() {
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");
+        if (!settings.autoConnect) transition(SessionState::Disconnected);
         return;
     }
     const auto chosen = matches.first();
     if (settings.usbSerial.isEmpty() && !chosen.serial.isEmpty() && chosen.vid >= 0 && chosen.pid >= 0) {
+        int duplicates = 0;
+        for (const auto &p : available)
+            if (p.serial == chosen.serial && p.vid == chosen.vid && p.pid == chosen.pid) ++duplicates;
+        if (duplicates != 1) {
+            report("Ambiguous newly discovered USB identity; refusing to bind or open any port");
+            if (!settings.autoConnect) transition(SessionState::Disconnected);
+            return;
+        }
         settings.usbSerial = chosen.serial; settings.vid = chosen.vid; settings.pid = chosen.pid;
         emit identityBound(settings);
     }
     settings.port = chosen.port;
     transition(SessionState::Connecting); opening = true;
+    // The bounded disk queue is ready before open can deliver any initial RX bytes.
+    startLog();
+    logger->enqueueEvent("opening " + chosen.port, QDateTime::currentDateTimeUtc());
     QString error; ++attempts;
     const bool ok = transport->open(chosen.port, settings, error);
     opening = false;
     if (ok) {
-        attempts = 0; lastProblem.clear(); startLog(); transition(SessionState::Connected);
-        // Keep the timer at 1 Hz, but a connected session never enumerates ports.
+        attempts = 0; lastProblem.clear();
+        logger->enqueueEvent("connected " + chosen.port, QDateTime::currentDateTimeUtc());
+        transition(SessionState::Connected);
     } else {
         report(QString("Open failed (%1/%2): %3").arg(attempts).arg(settings.retryLimit).arg(error));
-        if (attempts >= settings.retryLimit) {
+        logger->enqueueEvent("open failed: " + error, QDateTime::currentDateTimeUtc());
+        if (attempts >= settings.retryLimit || !settings.autoConnect) {
+            stopLog(!settings.autoConnect ? "open failed; automatic reconnect disabled" : "retry limit reached");
             transition(SessionState::Disconnected);
-            emit problem("Retry limit reached. Press Connect / Resume to try again.");
+            emit problem("Connection stopped. Press Connect / Resume to try again.");
         } else transition(SessionState::Waiting);
     }
 }
 void SessionWorker::lost(const QString &message) {
     report("Serial error: " + message);
+    if (logger) logger->enqueueEvent("interruption: " + message, QDateTime::currentDateTimeUtc());
     writeTimer->stop(); stopping = true; transport->close(); stopping = false;
     if (current != SessionState::ManuallyPaused && current != SessionState::Loaned) {
-        attempts = 0; transition(SessionState::Waiting);
+        attempts = 0; transition(settings.autoConnect ? SessionState::Waiting : SessionState::Disconnected);
+        if (!settings.autoConnect) stopLog("interrupted; automatic reconnect disabled");
         if (!pollTimer->isActive()) pollTimer->start();
     }
 }
@@ -221,5 +249,5 @@ void SessionWorker::shutdown() {
     if (pollTimer) pollTimer->stop();
     if (writeTimer) writeTimer->stop();
     if (transport) transport->close();
-    if (logger) { logger->shutdown(); delete logger; logger = nullptr; }
+    stopLog("window/session closed");
 }

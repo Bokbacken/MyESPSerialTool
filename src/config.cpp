@@ -18,8 +18,10 @@ QMap<QString, QString> Profile::values() const {
     number("logBytes", logBytes); number("logRetention", logRetention);
     number("logQueueBytes", logQueueBytes);
     flag("readOnly", readOnly); flag("dtr", dtr); flag("rts", rts);
+    flag("autoConnect", autoConnect);
     flag("localEcho", localEcho); flag("follow", follow); flag("logging", logging);
     flag("timestampMetadata", timestampMetadata);
+    flag("textLog", textLog);
     return v;
 }
 
@@ -63,9 +65,11 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !choice("stopBits", {"1", "1.5", "2"}, p.stopBits)
         || !choice("flowControl", {"none", "hardware", "software"}, p.flowControl)
         || !choice("newline", {"none", "lf", "cr", "crlf"}, p.newline)
-        || !boolean("readOnly", p.readOnly) || !boolean("dtr", p.dtr) || !boolean("rts", p.rts)
+        || !boolean("readOnly", p.readOnly) || !boolean("autoConnect", p.autoConnect)
+        || !boolean("dtr", p.dtr) || !boolean("rts", p.rts)
         || !boolean("localEcho", p.localEcho) || !boolean("follow", p.follow)
-        || !boolean("logging", p.logging) || !boolean("timestampMetadata", p.timestampMetadata))
+        || !boolean("logging", p.logging) || !boolean("timestampMetadata", p.timestampMetadata)
+        || !boolean("textLog", p.textLog))
         return false;
     for (const auto &key : {"port", "usbSerial", "logDirectory"}) {
         const QString s = v.value(key, p.values().value(key));
@@ -195,6 +199,7 @@ bool IniFile::save(QString &error) {
     while (!output.isEmpty() && output.last().isEmpty()) output.removeLast();
     QByteArray data = (output.join(crlf ? "\r\n" : "\n") + (crlf ? "\r\n" : "\n")).toUtf8();
     if (utf8Bom) data.prepend(QByteArray::fromHex("efbbbf"));
+    if (data.size() > 4194304) { error = "INI exceeds 4 MiB size limit"; return false; }
     if (QFileInfo::exists(path)) {
         QFile old(path);
         if (!old.open(QIODevice::ReadOnly)) { error = old.errorString(); return false; }

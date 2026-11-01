@@ -3,4 +3,8 @@
 /SerialESPHelper.ini
 /SerialESPHelper.ini.bak
 /test-artifacts/
+/package/
+/assets/
+/SerialESPHelper-*.zip
+/SHA256SUMS.txt
 *.user

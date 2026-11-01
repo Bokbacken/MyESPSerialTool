@@ -74,6 +74,7 @@ public slots:
     void configure(const Profile &profile, const QString &logDirectory);
     void resume();
     void pause();
+    void setReadOnly(bool readOnly);
     void send(const QByteArray &bytes);
     void poll();
     void shutdown();
@@ -98,4 +99,5 @@ private:
     void report(const QString &message);
     void lost(const QString &message);
     void startLog();
+    void stopLog(const QString &reason);
 };

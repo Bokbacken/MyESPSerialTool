@@ -28,6 +28,8 @@ class SessionWindow : public QMainWindow {
 public:
     explicit SessionWindow(AppConfig *config, const Profile &profile);
     ~SessionWindow() override;
+private slots:
+    void applyState(SessionState state);
 private:
     AppConfig *config;
     Profile settings;
@@ -44,6 +46,7 @@ private:
     QPlainTextEdit *events;
     QTimer *renderTimer;
     QStringList availablePorts;
+    QList<QWidget *> connectionEditors;
     void loadProfile(const Profile &profile);
     bool collect();
     void refreshProfiles();

@@ -40,6 +40,10 @@ egna villkor. Detta är inte juridisk rådgivning.
 7. Stäng av följ senaste utdata för att läsa äldre text; mottagning och
    loggning fortsätter. Read-only blockerar användarsändning, inte mottagning.
 
+Aktivera `autoConnect` i avancerade inställningar för övervakning och
+återanslutning. Standard `false` gör ett anslutningsförsök per klick.
+Ändring av read-only påverkar endast sändningsspärren; DTR/RTS ligger kvar.
+
 Om INI-katalogen inte är skrivbar visas ett fel och du får välja en annan fil;
 programmet flyttar inte inställningarna till AppData i smyg. Säkerhetskopiera
 INI-filen innan du flyttar profiler mellan datorer. Se kommenterade
@@ -62,7 +66,16 @@ inte garantera fysisk identitet efter en COM-omfördelning.
 Råloggen innehåller mottagna bytes **exakt**, aldrig tidsstämplar eller
 terminalens avkodade text. Metadata och valbar läsbar textlogg är separata.
 Tidsstämplar avser datorns mottagningstid, inte enhetstid.
-Rotation och retention kan radera äldre loggsegment enligt INI-inställningarna.
+`*.session` innehåller JSON-rader för profil/inställningar, identitet,
+start/slut och avbrott. Valbar `*.meta` kopplar mottagningstid till råoffset;
+valbar `*.text` är läsbar UTF-8 med synliga ogiltiga bytes/kontrolltecken.
+Textloggens tidsstämplar gäller mottagna fragment, inte en påstådd
+enhetstidsstämpel för varje komplett rad.
+Rotation och retention kan radera äldre loggsegment enligt INI-inställningarna;
+retention räknar avslutade segment utöver det aktiva.
+Sessionsmetadata skrivs även när råloggning är avstängd. Storleksgränsen
+gäller råsegment; text/offsetlogg roteras tillsammans med råloggen och
+kan bli större på grund av tidsstämplar och byte-escaping.
 Skrivfel, full disk och kööverflöde visas; kontrollera varningar innan du
 förlitar dig på en logg. Loggar kan innehålla privata data och laddas aldrig
 upp automatiskt. Senare filter får endast påverka vyn/export, inte råloggen.
