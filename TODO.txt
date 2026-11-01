@@ -8,6 +8,19 @@ komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
 Version 0.21.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
+SÅ HÅLLER VI BACKLOGGEN AKTUELL
+- Lägg nya idéer under rätt etapp eller i "Övriga förbättringsidéer".
+- Skriv kort vad användaren vill kunna göra och hur resultatet kan verifieras.
+- Märk tydligt om arbetet hör till detta serialverktyg eller ett annat repo.
+- Flytta inte en punkt till implementerad förrän funktionen finns och är testad.
+- Lägg nya hårdvaruberoende acceptanstester i matrisen nedan.
+
+ÖVRIGA FÖRBÄTTRINGSIDÉER
+- [ ] Verifiera fysisk ESP32-urkoppling/återanslutning och ändrat COM-nummer
+      med USB-identitet på Windows; komplettera med resultat och adaptermodell.
+- [ ] Samla användarfeedback från verklig terminalanvändning och fyll på
+      backloggen med konkreta, verifierbara förbättringar.
+
 ETAPP 1 — implementeras i denna leverans
 - Qt Widgets/CMake, dynamisk Qt-distribution, Windows x64-portabel ZIP.
 - Läsbar versionsmärkt INI, profiler, flera samtidiga sessionsfönster.

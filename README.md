@@ -23,26 +23,52 @@ egna villkor. Detta är inte juridisk rådgivning.
 
 ## Kom igång på Windows
 
-1. Hämta `SerialESPHelper-windows-x64.zip` från en lyckad Actions-körnings
-   artefakt, eller från en uttryckligen publicerad release. Actions-artefakten
-   innehåller ZIP och `SHA256SUMS.txt`.
-2. Packa upp **hela** ZIP-filen i en skrivbar katalog. Flytta inte bara EXE:n.
-3. Starta `SerialESPHelper.exe`. Inställningar ligger normalt i
-   `SerialESPHelper.ini` bredvid programmet.
-4. Välj/skapa en profil. Port och baudrate är redigerbara; listorna är förslag.
-   Även en port som inte finns för tillfället kan sparas. Starta separata
-   sessionsfönster för flera enheter.
-5. Standard är 115200, 8 databitar, ingen paritet, 1 stoppbit, ingen
-   flödeskontroll och read-only. Avancerade serialinställningar finns i dialogen.
-   Kontrollera DTR/RTS innan anslutning: de kan styra reset på ESP-kort.
-6. Återuppta/anslut för mottagning. Manuell paus/frånkoppling förhindrar
-   automatisk återanslutning tills du uttryckligen återupptar sessionen.
-7. Stäng av följ senaste utdata för att läsa äldre text; mottagning och
-   loggning fortsätter. Read-only blockerar användarsändning, inte mottagning.
+1. Hämta `SerialESPHelper-windows-x64.zip` från en lyckad Actions-körning
+   eller en publicerad release. Actions-artefakten innehåller även
+   `SHA256SUMS.txt`.
+2. Packa upp **hela** ZIP-filen i en skrivbar katalog. Starta
+   `SerialESPHelper.exe` därifrån; flytta inte EXE-filen ensam. Ingen
+   installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
+3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
+   portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
+   uppdateras automatiskt, men portfältet är redigerbart så att en frånkopplad
+   port kan anges i förväg. Baudrate är också redigerbar.
+4. Standardinställningen är 115200 baud, 8 databitar, ingen paritet, 1 stoppbit,
+   ingen flödeskontroll och **Read-only**. Öppna **Advanced…** för fler
+   serialinställningar och loggning. Kontrollera DTR/RTS: de kan påverka reset
+   på ESP-kort. Spara med **Save profile** för att behålla ändringarna i INI-filen.
+5. Klicka **Connect / Resume** för att ansluta. Inkommande data visas i
+   terminalen och anslutningstillstånd/fel visas under statusraden och i
+   händelselistan längst ned. **Manual pause** kopplar från och blockerar
+   automatisk återanslutning tills du klickar **Connect / Resume** igen.
+6. För att skicka data, avmarkera **Read-only**, skriv text och välj
+   radslut (`none`, `lf`, `cr` eller `crlf`). Markera **Hex bytes** för att
+   skicka hexadecimala bytepar, till exempel `41 00 FF`. Lokal echo är valfri.
+   Read-only skyddar bara mot sändning; det stoppar inte mottagning.
+7. Använd **New window** för ytterligare en enhet. Varje fönster har en egen
+   serialsession. **Clear rendered view** rensar bara terminalvisningen, inte
+   mottagningen eller loggfilerna. Stäng av **Follow scroll** för att läsa äldre
+   utdata medan mottagning och loggning fortsätter.
 
-Aktivera `autoConnect` i avancerade inställningar för övervakning och
-återanslutning. Standard `false` gör ett anslutningsförsök per klick.
-Ändring av read-only påverkar endast sändningsspärren; DTR/RTS ligger kvar.
+### Automatisk anslutning och profiler
+
+Öppna **Advanced…** och aktivera automatisk anslutning om profilen ska ansluta
+när dess fönster öppnas och försöka återansluta efter frånkoppling. Spara
+profilen för att behålla valet. Standard är av: ett klick på **Connect / Resume**
+gör då ett anslutningsförsök, och ett nytt klick krävs efter en frånkoppling.
+En manuell paus blockerar återanslutning även när automatisk anslutning är på.
+
+När enheten har ett USB-serienummer och VID/PID binds profilen till den
+identiteten första gången den ansluter. Då följer återanslutningen enheten även
+om COM-numret ändras. **Forget USB binding** rensar bindningen; spara profilen
+för att behålla ändringen. Saknad eller tvetydig identitet leder inte till att
+programmet väljer en annan enhet godtyckligt. Utan unikt serienummer används
+portnamnet, vilket inte garanterar fysisk identitet om operativsystemet byter
+COM-nummer.
+
+Inställningar ligger i `SerialESPHelper.ini` bredvid programmet. **Save INI as…**
+väljer en annan plats uttryckligen; programmet flyttar inte inställningar i
+bakgrunden. `example.ini` dokumenterar profilnycklar och standardvärden.
 
 Om INI-katalogen inte är skrivbar visas ett fel och du får välja en annan fil;
 programmet flyttar inte inställningarna till AppData i smyg. Säkerhetskopiera
@@ -101,7 +127,8 @@ inte en verifierad Raspberry Pi-distribution.
 
 Automatiserade tester använder abstraherad/falsk serialtransport; de ersätter
 inte riktiga USB-, ESP- eller Windows-hårdvarutester. Se `TODO.txt` för
-acceptansmatris och kvarvarande etapper.
+acceptansmatris, planerade förbättringar och en enkel rutin för att fylla på
+backloggen.
 
 ### GitHub Actions
 
