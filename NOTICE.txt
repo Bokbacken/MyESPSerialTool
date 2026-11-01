@@ -12,7 +12,7 @@ no GPL-only application module is required.
 The portable ZIP includes licenses/qtbase and licenses/qtserialport with
 LGPLv3, GPLv3 (incorporated by LGPLv3), and third-party license texts.
 Corresponding Qt sources, third-party copyright notices and build files are
-provided in sources/qt-6.8.3-sources.tar.xz in that same ZIP.
+provided in sources/qt-6.8.3-sources.tar.gz in that same ZIP.
 Third-party component attribution is recorded in Qt's source
 src/3rdparty/*/qt_attribution.json files and accompanying source headers.
 
