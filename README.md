@@ -29,7 +29,8 @@ egna villkor. Detta är inte juridisk rådgivning.
 2. Packa upp **hela** ZIP-filen i en skrivbar katalog. Starta
    `SerialESPHelper.exe` därifrån; flytta inte EXE-filen ensam. Ingen
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
-   Fönstertiteln visar versionsnumret. Om Expression-väljaren saknas och
+   Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
+   Om Expression-väljaren saknas och
    titeln inte visar 0.22.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in

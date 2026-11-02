@@ -39,6 +39,9 @@ private slots:
         SessionWindow window(&config, config.ini.profiles.first());
         QVERIFY(window.windowTitle().contains("0.22.0"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
+        const auto *version = window.findChild<QLabel *>("applicationVersion");
+        QVERIFY(version);
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.22.0"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";

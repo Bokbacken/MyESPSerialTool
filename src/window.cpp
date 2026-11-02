@@ -219,6 +219,10 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     auto *configLabel = new QLabel("INI: " + config->ini.path);
     configLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(configLabel);
+    auto *versionLabel = new QLabel("Serial ESP Helper — Version " + QCoreApplication::applicationVersion());
+    versionLabel->setObjectName("applicationVersion");
+    versionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(versionLabel);
     setCentralWidget(central);
     refreshProfiles(); loadProfile(p);
     worker->moveToThread(&thread);
