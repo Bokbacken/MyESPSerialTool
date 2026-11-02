@@ -71,7 +71,8 @@ int main(int argc, char **argv) {
                 const quint32 offset = i == 0 ? 0xd000 : quint32(i * 0x10000);
                 qToLittleEndian(offset, entry + 4);
                 qToLittleEndian<quint32>(metadata ? 8192 : 65536, entry + 8);
-                const QByteArray label = metadata ? "otadata" : QByteArray("ota_") + QByteArray::number(i - 1);
+                const QByteArray label = metadata ? QByteArray("otadata")
+                    : QByteArray("ota_") + QByteArray::number(i - 1);
                 std::copy(label.begin(), label.end(), entry + 12);
                 if (metadata && mode == "ota-encrypted") qToLittleEndian<quint32>(1, entry + 28);
             }
