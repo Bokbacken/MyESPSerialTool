@@ -13,6 +13,17 @@
 #include <QTextCursor>
 #include <QFileDialog>
 #include <QFile>
+
+class WindowSerial : public SerialTransport {
+public:
+    QList<PortIdentity> ports() const override { return {{"TEST", "", "", -1, -1}}; }
+    bool open(const QString &, const Profile &, QString &) override { opened = true; return true; }
+    void close() override { opened = false; }
+    bool isOpen() const override { return opened; }
+    qint64 write(const QByteArray &bytes) override { return bytes.size(); }
+    qint64 pendingWrites() const override { return 0; }
+    bool opened = false;
+};
 #include <QTest>
 
 class WindowTests : public QObject {
@@ -149,6 +160,61 @@ private slots:
         QCOMPARE(saved.readAll(), QByteArray("irst\nsec"));
         cursor.clearSelection(); terminal->setTextCursor(cursor);
         QVERIFY(!selection->isEnabled());
+    }
+    void expressionViewHighlightExportAndProfile() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; QString error;
+        QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
+        Profile p; p.port = "TEST"; p.logDirectory = directory.path();
+        config.ini.profiles = {p};
+        auto *serial = new WindowSerial;
+        SessionWindow window(&config, p, serial);
+        window.findChild<QPushButton *>("connectButton")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"), 2000);
+        QMetaObject::invokeMethod(serial, [serial] {
+            emit serial->received("info temp=1\nerror flash temp=23\nerror timeout temp=5\n");
+        }, Qt::QueuedConnection);
+        auto *terminal = window.findChild<QTextEdit *>("terminal");
+        QTRY_VERIFY(terminal->toPlainText().contains("error flash temp=23"));
+        auto *mode = window.findChild<QComboBox *>("filterMode");
+        auto *query = window.findChild<QLineEdit *>("terminalFilter");
+        auto *count = window.findChild<QLabel *>("filterStatus");
+        mode->setCurrentIndex(1);
+        query->setText("\"error*\" && temp >= 20");
+        QCOMPARE(terminal->toPlainText(), QString("error flash temp=23"));
+        QVERIFY(count->text().startsWith("1 / 4"));
+        auto *highlight = window.findChild<QCheckBox *>("filterHighlight");
+        highlight->setChecked(true);
+        QVERIFY(terminal->toPlainText().contains("info temp=1"));
+        QCOMPARE(terminal->extraSelections().size(), 1);
+        const auto output = directory.filePath("filtered.txt");
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = window.findChild<QFileDialog *>();
+            QVERIFY(dialog); dialog->selectFile(output);
+            QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        window.findChild<QPushButton *>("saveFiltered")->click();
+        QFile saved(output); QVERIFY(saved.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), QByteArray("error flash temp=23"));
+        window.findChild<QPushButton *>("saveProfile")->click();
+        IniFile restored; QVERIFY(restored.load(config.ini.path, error));
+        QCOMPARE(restored.profiles.first().filterMode, QString("expression"));
+        QCOMPARE(restored.profiles.first().filterText, query->text());
+        QVERIFY(restored.profiles.first().filterHighlight);
+        query->setText("\"error\" &&");
+        QVERIFY(count->text().startsWith("Position "));
+        QVERIFY(!window.findChild<QPushButton *>("saveFiltered")->isEnabled());
+        QVERIFY(terminal->toPlainText().contains("info temp=1"));
+        QVERIFY(terminal->extraSelections().isEmpty());
+        query->setText("\"nomatch\"");
+        QVERIFY(count->text().startsWith("0 / 4"));
+        highlight->setChecked(false);
+        QCOMPARE(terminal->toPlainText(), QString());
+        query->clear();
+        QVERIFY(terminal->toPlainText().contains("error timeout temp=5"));
+        mode->setCurrentIndex(0);
+        query->setText("*");
+        QCOMPARE(terminal->toPlainText(), QString());
     }
 };
 QTEST_MAIN(WindowTests)

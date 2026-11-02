@@ -2,6 +2,7 @@
 #include "config.h"
 #include "session.h"
 #include "terminal.h"
+#include "filter.h"
 #include <QMainWindow>
 #include <memory>
 
@@ -27,7 +28,7 @@ signals:
 class SessionWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit SessionWindow(AppConfig *config, const Profile &profile);
+    explicit SessionWindow(AppConfig *config, const Profile &profile, SerialTransport *transport = nullptr);
     ~SessionWindow() override;
 private slots:
     void applyState(SessionState state);
@@ -48,7 +49,12 @@ private:
     QPlainTextEdit *events;
     QTimer *renderTimer;
     QLineEdit *terminalFilter;
-    QCheckBox *filterCase;
+    QCheckBox *filterCase, *filterHighlight;
+    QComboBox *filterMode;
+    QLabel *filterStatus;
+    QPushButton *saveFiltered;
+    LineFilter expressionFilter;
+    bool filterValid = true;
     QStringList availablePorts;
     QString logPath, logFault;
     QList<QWidget *> connectionEditors;
@@ -62,6 +68,9 @@ private:
     void sendMessage();
     void render();
     void renderView();
+    void updateFilter();
+    bool matchesFilter(const QString &line) const;
+    QString filteredText(const QString &text) const;
     void exportTerminal(ExportMode mode);
     void addEvent(const QString &message);
 };
