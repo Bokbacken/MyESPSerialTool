@@ -1,11 +1,11 @@
-Serial ESP Helper — leveransplan, version 0.22.0
+Serial ESP Helper — leveransplan, version 0.23.0
 ================================================
 
 AVGRÄNSNING
 Detta repo började med enbart README och innehåller ingen ESP32-firmware,
 äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
 komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
-Version 0.22.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+Version 0.23.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
 SÅ HÅLLER VI BACKLOGGEN AKTUELL
@@ -62,6 +62,10 @@ Kvarvarande verkliga tester (ej påstått utförda):
 [ ] Långvarig belastning: minne/GUI-respons/loggkö och råbytejämförelse.
 [ ] Skrivskyddad INI-katalog, atomisk ersättning/backup och antivirus-lås.
 [ ] Verifiera arkivets licenser och motsvarande Qt-källor före distribution.
+[ ] Verifiera esptool version 4.x/5.x på Windows med ESP32 ansluten:
+    chip-/flashinfo, partitionstabell, rådump och coredump-partition.
+[ ] Avbryt esptool och simulera saknat verktyg/port, felaktig version och
+    icke-noll exitstatus; verifiera portåterställning och att flash är oförändrad.
 
 ETAPP 2 — avancerade filter och export (delvis implementerad)
 [x] Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader.
@@ -77,14 +81,17 @@ ETAPP 2 — avancerade filter och export (delvis implementerad)
 [ ] Mottagningstidsintervall och export av markerat tidsintervall.
     Kräver tidskopplad terminalhistorik; gissa inte tider ur enhetens loggtext.
 
-ETAPP 3 — esptool-portöverlämning/chipinfo/rådump (ej implementerad)
-- Officiell separat esptool.exe, konfigurerad sökväg och versionskontroll.
-- QProcess med argumentlista; aldrig användardata i shellkommando.
-- Exklusiv portöverlämning och återställd anslutningsavsikt även vid
-  verktygsfel/avbrytning; respektera manuell paus.
-- Progress, full stdout/stderr, exitstatus.
-- Chipmodell/revision, flashstorlek/partitioner, rådump/kraschdump till fil.
-- Rådump får aldrig radera/skriva flash. Testa fel och avbrytning.
+ETAPP 3 — esptool-portöverlämning/chipinfo/rådump (implementerad i 0.23.0)
+[x] Separat officiell esptool.exe, profilsparad sökväg och kontroll av v4/v5.
+[x] QProcess med separata argument; användardata skickas aldrig via shell.
+[x] Exklusiv portöverlämning och återställning även efter fel/avbrytning;
+    manuell paus avbryter verktyget och förhindrar återanslutning.
+[x] Visa förlopp, stdout/stderr och exitstatus.
+[x] Chip-/revisions- och flash-ID, ESP-IDF-standardens partitionstabell,
+    uttrycklig rå flashläsning och full partitionsdump (inklusive coredump).
+[x] Endast läskommandon; temporära utdata storlekskontrolleras och atomiskt
+    sparas. Automatiserade tester täcker versioner, argument, parser och
+    portöverlämning. Verkligt ESP-/Windows-test återstår i matrisen.
 
 ETAPP 4 — verifierad flashprogrammering (ej implementerad)
 - App, bootloader och merged image via verifierat manifest/flasher_args.json/

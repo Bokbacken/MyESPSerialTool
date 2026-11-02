@@ -1,4 +1,5 @@
 #include "window.h"
+#include "esptool_dialog.h"
 #include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -95,11 +96,15 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     advancedButton->setObjectName("advanced");
     auto *connectButton = new QPushButton("Connect / Resume");
     connectButton->setObjectName("connectButton");
+    auto *diagnosticsButton = new QPushButton("ESP diagnostics…");
+    diagnosticsButton->setObjectName("esptoolDiagnostics");
     auto *pauseButton = new QPushButton("Manual pause");
+    pauseButton->setObjectName("pauseButton");
     connectionRow->addWidget(new QLabel("Port")); connectionRow->addWidget(port, 1);
     connectionRow->addWidget(new QLabel("Baud")); connectionRow->addWidget(baud);
     connectionRow->addWidget(readOnly); connectionRow->addWidget(advancedButton);
     connectionRow->addWidget(connectButton); connectionRow->addWidget(pauseButton);
+    connectionRow->addWidget(diagnosticsButton);
     layout->addLayout(connectionRow);
     autoReconnect = new QCheckBox("Reconnect automatically after connection loss");
     autoReconnect->setObjectName("autoReconnect");
@@ -228,12 +233,19 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     worker->moveToThread(&thread);
     connect(&thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(worker, &SessionWorker::stateChanged, this, &SessionWindow::applyState);
+    connect(worker, &SessionWorker::toolCancelRequested, this, [this] {
+        if (diagnosticsDialog) diagnosticsDialog->cancelCurrent();
+    });
     connect(worker, &SessionWorker::problem, this, &SessionWindow::addEvent);
     connect(worker, &SessionWorker::logFileChanged, this, [this](const QString &path) {
         logPath = path; updateLogStatus();
     });
     connect(worker, &SessionWorker::portsAvailable, this, [this](const QStringList &ports) {
         availablePorts = ports; refreshPorts();
+    });
+    connect(worker, &SessionWorker::selectedPortChanged, this, [this](const QString &selected) {
+        settings.port = selected;
+        port->setCurrentText(selected);
     });
     connect(worker, &SessionWorker::identityBound, this, [this](const Profile &bound) {
         settings.usbSerial = bound.usbSerial; settings.vid = bound.vid; settings.pid = bound.pid;
@@ -288,6 +300,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
                          : "Automatic reconnect disabled. Save profile to persist.");
     });
     connect(connectButton, &QPushButton::clicked, this, &SessionWindow::connectSession);
+    connect(diagnosticsButton, &QPushButton::clicked, this, &SessionWindow::showEsptool);
     connect(pauseButton, &QPushButton::clicked, this, [this] {
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
     });
@@ -311,7 +324,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     connect(renderTimer, &QTimer::timeout, this, &SessionWindow::render); renderTimer->start();
     connect(&thread, &QThread::started, worker, &SessionWorker::monitor);
     thread.start();
-    addEvent("Stage 1: event-driven serial. Manual pause releases the port and suppresses reconnect.");
+    addEvent("Event-driven serial. Manual pause releases the port and suppresses reconnect.");
     addEvent("DTR/RTS are explicit connection settings, independent of read-only send gating.");
     addEvent("OS/adapter opening or closing may pulse physical lines. Read-only toggles never reopen the port.");
     if (p.autoConnect) QTimer::singleShot(0, this, &SessionWindow::connectSession);
@@ -319,11 +332,14 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
 void SessionWindow::applyState(SessionState s) {
     state = s; status->setText(stateName(s));
     updateLogStatus();
-    const bool active = s == SessionState::Waiting || s == SessionState::Connecting
-        || s == SessionState::Connected || s == SessionState::Loaned;
+    const bool active = diagnosticsDialog || s == SessionState::Waiting
+        || s == SessionState::Connecting || s == SessionState::Connected
+        || s == SessionState::Loaned;
     for (QWidget *editor : connectionEditors) {
         editor->setEnabled(!active);
-        editor->setToolTip(active ? "Manual pause before editing connection settings" : "");
+        editor->setToolTip(!active ? "" : diagnosticsDialog
+            ? "Close the esptool diagnostics window before changing profiles or ports."
+            : "Manual pause before editing connection settings");
     }
     sendButton->setEnabled(s == SessionState::Connected && !settings.readOnly);
     if (s != SessionState::Connected && s != SessionState::Connecting) {
@@ -331,7 +347,9 @@ void SessionWindow::applyState(SessionState s) {
     }
 }
 SessionWindow::~SessionWindow() {
+    shuttingDown = true;
     renderTimer->stop();
+    if (diagnosticsDialog) diagnosticsDialog->cancelAndWait();
     QMetaObject::invokeMethod(worker, &SessionWorker::shutdown, Qt::BlockingQueuedConnection);
     thread.quit(); thread.wait();
 }
@@ -416,6 +434,7 @@ void SessionWindow::advanced(int tab) {
     const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog",
                                "autoReconnect", "newLogOnReconnect"};
     const QList<QPair<QString, QString>> fields = {
+        {"esptoolPath", "Official esptool executable path (4.x/5.x)"},
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
         {"autoConnect", "Connect on window open and retry failed initial opens (explicit opt-in)"},
         {"autoReconnect", "Reconnect this session after connection loss"},
@@ -507,6 +526,39 @@ void SessionWindow::connectSession() {
     QMetaObject::invokeMethod(worker, [worker = worker, p, directory] {
         worker->configure(p, directory); worker->resume();
     }, Qt::QueuedConnection);
+}
+void SessionWindow::showEsptool() {
+    if (diagnosticsDialog) {
+        diagnosticsDialog->raise();
+        diagnosticsDialog->activateWindow();
+        return;
+    }
+    if (!collect()) return;
+    auto acquire = [this](QString &error) {
+        bool prepared = false;
+        QMetaObject::invokeMethod(worker, [&] { prepared = worker->prepareTool(error); },
+                                  Qt::BlockingQueuedConnection);
+        return prepared;
+    };
+    auto release = [this] {
+        QMetaObject::invokeMethod(worker, &SessionWorker::finishTool,
+                                  Qt::BlockingQueuedConnection);
+    };
+    auto *dialog = new EsptoolDialog(settings, acquire, release, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    diagnosticsDialog = dialog;
+    connect(dialog, &EsptoolDialog::pathChanged, this, [this](const QString &path) {
+        settings.esptoolPath = path;
+    });
+    connect(dialog, &QObject::destroyed, this, [this] {
+        diagnosticsDialog = nullptr;
+        if (!shuttingDown) applyState(state);
+    });
+    for (QWidget *editor : connectionEditors) {
+        editor->setEnabled(false);
+        editor->setToolTip("Close the esptool diagnostics window before changing profiles or ports.");
+    }
+    dialog->show();
 }
 void SessionWindow::sendMessage() {
     if (readOnly->isChecked() || settings.readOnly || state != SessionState::Connected) {

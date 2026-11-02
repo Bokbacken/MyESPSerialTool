@@ -1,7 +1,7 @@
-# Serial ESP Helper — 0.22.0
+# Serial ESP Helper — 0.23.0
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
-trafikloggning och uttrycksfilter finns; esptool kommer i en senare etapp. Ingen Python,
+trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
 .NET, installation eller administratörsbehörighet behövs för terminalen.
 USB-drivrutin för den faktiska enheten kan fortfarande behövas.
 
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.22.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.23.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
@@ -77,6 +77,28 @@ för att behålla ändringen. Saknad eller tvetydig identitet leder inte till at
 programmet väljer en annan enhet godtyckligt. Utan unikt serienummer används
 portnamnet, vilket inte garanterar fysisk identitet om operativsystemet byter
 COM-nummer.
+
+### ESP-diagnostik med esptool
+
+Välj först den officiella, separat installerade `esptool.exe` i
+**Settings… → Connection → Official esptool executable path**. Verktyget
+buntas inte med appen. **ESP diagnostics…** kontrollerar verktygets version
+innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behålla
+sökvägen.
+
+Diagnostikfönstret kan visa chip-/revisions- och flash-ID-information, läsa
+ESP-IDF:s partitionstabell från standardadressen `0x8000`, läsa ett uttryckligt
+adressintervall eller spara en hel vald partition, inklusive en eventuell
+coredump-partition. Rådumpar verifieras mot förväntad storlek och skrivs
+atomiskt till målfiler. Förlopp, fullständig stdout/stderr och exitstatus visas.
+
+Porten stängs exklusivt innan esptool startas. Efter avslut eller fel återställs
+den tidigare anslutningsavsikten; **Manual pause** under en operation avbryter
+verktyget och hindrar återanslutning. All inmatning skickas som separata
+`QProcess`-argument, aldrig via ett shell. Diagnostikvyn har bara chip-/flash-ID
+och flashläsningskommandon: den kan inte radera eller skriva flash. En rå
+coredump sparas som bytes; avkodning kräver separat matchande ELF och ingår
+inte här.
 
 Inställningar ligger i `SerialESPHelper.ini` bredvid programmet. **Save INI as…**
 väljer en annan plats uttryckligen; programmet flyttar inte inställningar i
@@ -252,7 +274,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.22.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.23.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

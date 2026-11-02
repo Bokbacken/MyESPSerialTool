@@ -11,6 +11,7 @@ QMap<QString, QString> Profile::values() const {
     auto number = [&](const char *key, qint64 value) { v[key] = QString::number(value); };
     auto flag = [&](const char *key, bool value) { v[key] = value ? "true" : "false"; };
     v["port"] = port; v["usbSerial"] = usbSerial; v["parity"] = parity;
+    v["esptoolPath"] = esptoolPath;
     v["stopBits"] = stopBits; v["flowControl"] = flowControl; v["newline"] = newline;
     v["logDirectory"] = logDirectory;
     v["logName"] = logName;
@@ -90,13 +91,14 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
     if (p.logName.isEmpty() || p.logName.size() > 160
         || literal.contains(QRegularExpression("[^A-Za-z0-9_-]")))
         return fail("logName (use letters, digits, _-, and {profile}/{date}/{time}/{port}/{serial}/{id})");
-    for (const auto &key : {"port", "usbSerial", "logDirectory", "filterText"}) {
+    for (const auto &key : {"port", "usbSerial", "esptoolPath", "logDirectory", "filterText"}) {
         const QString s = v.value(key, p.values().value(key));
         if (s.size() > 4096 || s.contains(QRegularExpression("[\\r\\n\\x00]"))
             || s != s.trimmed() || s.contains(QRegularExpression("\\s[;#]")))
             return fail(key);
         if (QString(key) == "port") p.port = s;
         else if (QString(key) == "usbSerial") p.usbSerial = s;
+        else if (QString(key) == "esptoolPath") p.esptoolPath = s;
         else if (QString(key) == "logDirectory") p.logDirectory = s;
         else p.filterText = s;
     }

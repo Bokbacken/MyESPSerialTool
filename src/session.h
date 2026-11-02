@@ -73,6 +73,8 @@ public:
 public slots:
     void monitor();
     void configure(const Profile &profile, const QString &logDirectory);
+    bool prepareTool(QString &error);
+    void finishTool();
     void resume();
     void pause();
     void setReadOnly(bool readOnly);
@@ -82,11 +84,13 @@ public slots:
     void shutdown();
 signals:
     void portsAvailable(const QStringList &ports);
+    void selectedPortChanged(const QString &port);
     void stateChanged(SessionState state);
     void problem(const QString &message);
     void identityBound(const Profile &profile);
     void logFileChanged(const QString &rawPath);
     void sent(const QByteArray &bytes);
+    void toolCancelRequested();
 private:
     SerialTransport *transport;
     std::shared_ptr<DisplayBuffer> display;
@@ -96,6 +100,7 @@ private:
     SessionState current = SessionState::Disconnected;
     int attempts = 0;
     bool initialized = false, opening = false, stopping = false, reconnectAfterLoss = false;
+    bool restoreAfterTool = false, manualPauseDuringTool = false, toolRestorePending = false;
     LogWorker *logger = nullptr;
     void initialize();
     void transition(SessionState state);

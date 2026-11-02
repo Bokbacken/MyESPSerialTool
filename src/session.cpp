@@ -64,7 +64,7 @@ QString stateName(SessionState state) {
     case SessionState::Connecting: return "Connecting";
     case SessionState::Connected: return "Connected";
     case SessionState::ManuallyPaused: return "Manually paused";
-    case SessionState::Loaned: return "Loaned (reserved)";
+    case SessionState::Loaned: return "Port lent to esptool";
     }
     return {};
 }
@@ -132,12 +132,49 @@ void SessionWorker::configure(const Profile &p, const QString &directory) {
     stopping = false; settings = checked; logDirectory = directory; attempts = 0;
     if (display) display->setLimit(settings.displayQueueBytes);
     reconnectAfterLoss = false;
+    toolRestorePending = false;
     lastProblem.clear(); transition(SessionState::Disconnected);
 }
 void SessionWorker::monitor() {
     initialize();
     pollTimer->start();
     poll();
+}
+bool SessionWorker::prepareTool(QString &error) {
+    initialize();
+    if (current == SessionState::Loaned) {
+        error = "The serial port is already lent to another esptool operation.";
+        return false;
+    }
+    restoreAfterTool = current == SessionState::Connected
+        || current == SessionState::Waiting || current == SessionState::Connecting;
+    manualPauseDuringTool = current == SessionState::ManuallyPaused;
+    attempts = 0;
+    if (pollTimer) pollTimer->stop();
+    if (writeTimer) writeTimer->stop();
+    stopping = true;
+    transport->close();
+    stopping = false;
+    stopLog("serial port handed to esptool");
+    transition(SessionState::Loaned);
+    return true;
+}
+void SessionWorker::finishTool() {
+    if (current != SessionState::Loaned) return;
+    const bool reconnect = restoreAfterTool && !manualPauseDuringTool;
+    restoreAfterTool = false;
+    if (reconnect) {
+        reconnectAfterLoss = true;
+        toolRestorePending = true;
+        transition(SessionState::Waiting);
+        if (pollTimer) pollTimer->start();
+        poll();
+    } else {
+        toolRestorePending = false;
+        transition(manualPauseDuringTool ? SessionState::ManuallyPaused
+                                         : SessionState::Disconnected);
+    }
+    manualPauseDuringTool = false;
 }
 void SessionWorker::resume() {
     initialize();
@@ -148,9 +185,18 @@ void SessionWorker::resume() {
     if (!pollTimer->isActive()) pollTimer->start();
 }
 void SessionWorker::pause() {
-    initialize(); writeTimer->stop();
+    initialize();
+    if (current == SessionState::Loaned) {
+        restoreAfterTool = false;
+        manualPauseDuringTool = true;
+        toolRestorePending = false;
+        emit toolCancelRequested();
+        return;
+    }
+    writeTimer->stop();
     stopping = true; transport->close(); stopping = false;
     reconnectAfterLoss = false;
+    toolRestorePending = false;
     stopLog("manually paused");
     transition(SessionState::ManuallyPaused);
 }
@@ -163,7 +209,7 @@ void SessionWorker::setAutoReconnect(bool enabled) {
     settings.autoReconnect = enabled;
     if (logger) logger->enqueueEvent(enabled ? "automatic reconnect enabled" : "automatic reconnect disabled",
                                      QDateTime::currentDateTimeUtc());
-    if (!enabled && reconnectAfterLoss && current == SessionState::Waiting) {
+    if (!enabled && reconnectAfterLoss && !toolRestorePending && current == SessionState::Waiting) {
         stopLog("automatic reconnect disabled while waiting");
         transition(SessionState::Disconnected);
     }
@@ -205,7 +251,8 @@ void SessionWorker::poll() {
                                   : "Selected device moved to another port");
     }
     if (current != SessionState::Waiting) return;
-    const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
+    const bool shouldReconnect = toolRestorePending
+        || (reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect);
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");
@@ -226,6 +273,7 @@ void SessionWorker::poll() {
         emit identityBound(settings);
     }
     settings.port = chosen.port;
+    emit selectedPortChanged(chosen.port);
     transition(SessionState::Connecting); opening = true;
     // The bounded disk queue is ready before open can deliver any initial RX bytes.
     startLog();
@@ -236,12 +284,14 @@ void SessionWorker::poll() {
     if (ok) {
         attempts = 0; lastProblem.clear();
         reconnectAfterLoss = true;
+        toolRestorePending = false;
         logger->enqueueEvent("connected " + chosen.port, QDateTime::currentDateTimeUtc());
         transition(SessionState::Connected);
     } else {
         report(QString("Open failed (%1/%2): %3").arg(attempts).arg(settings.retryLimit).arg(error));
         logger->enqueueEvent("open failed: " + error, QDateTime::currentDateTimeUtc());
         if (attempts >= settings.retryLimit || !shouldReconnect) {
+            toolRestorePending = false;
             stopLog(!shouldReconnect ? "open failed; automatic reconnect disabled" : "retry limit reached");
             transition(SessionState::Disconnected);
             emit problem("Connection stopped. Press Connect / Resume to try again.");
@@ -253,7 +303,8 @@ void SessionWorker::lost(const QString &message) {
     if (logger) logger->enqueueEvent("interruption: " + message, QDateTime::currentDateTimeUtc());
     writeTimer->stop(); stopping = true; transport->close(); stopping = false;
     if (current != SessionState::ManuallyPaused && current != SessionState::Loaned) {
-        const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
+        const bool shouldReconnect = toolRestorePending
+            || (reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect);
         attempts = 0; transition(shouldReconnect ? SessionState::Waiting : SessionState::Disconnected);
         if (!shouldReconnect) stopLog("interrupted; automatic reconnect disabled");
         else if (settings.newLogOnReconnect) stopLog("interrupted; new log on reconnect");

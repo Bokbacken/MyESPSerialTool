@@ -13,6 +13,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QTextEdit;
 class QLineEdit;
+class EsptoolDialog;
 
 class AppConfig : public QObject {
     Q_OBJECT
@@ -40,6 +41,7 @@ private:
     std::shared_ptr<DisplayBuffer> display;
     QThread thread;
     SessionWorker *worker;
+    EsptoolDialog *diagnosticsDialog = nullptr;
     SessionState state = SessionState::Disconnected;
     QComboBox *profiles, *port, *baud, *sendText, *newline;
     QCheckBox *readOnly, *echo, *follow, *hexSend, *autoReconnect;
@@ -55,6 +57,7 @@ private:
     QPushButton *saveFiltered;
     LineFilter expressionFilter;
     bool filterValid = true;
+    bool shuttingDown = false;
     QStringList availablePorts;
     QString logPath, logFault;
     QList<QWidget *> connectionEditors;
@@ -65,6 +68,7 @@ private:
     void advanced(int tab = 0);
     void updateLogStatus();
     void connectSession();
+    void showEsptool();
     void sendMessage();
     void render();
     void renderView();

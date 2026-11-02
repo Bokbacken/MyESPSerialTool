@@ -1,4 +1,5 @@
 #include "window.h"
+#include "esptool_dialog.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
@@ -6,6 +7,7 @@
 #include <QDialogButtonBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -13,6 +15,9 @@
 #include <QTextCursor>
 #include <QFileDialog>
 #include <QFile>
+#include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
 
 class WindowSerial : public SerialTransport {
 public:
@@ -31,17 +36,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.22.0");
+        QCoreApplication::setApplicationVersion("0.23.0");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.22.0"));
+        QVERIFY(window.windowTitle().contains("0.23.0"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.22.0"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.23.0"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -106,6 +111,94 @@ private slots:
         SessionWindow automatic(&config, p);
         QTRY_VERIFY_WITH_TIMEOUT(!automatic.findChild<QComboBox *>("port")->isEnabled(), 500);
         QVERIFY(manual.findChild<QComboBox *>("port")->isEnabled());
+    }
+    void esptoolUsesSeparateArgsAndReleasesPortOnFailureOrCancel() {
+        QTemporaryDir directory(QDir::temp().filePath("esptool fixture-XXXXXX"));
+        QVERIFY(directory.isValid());
+        const QString fake = directory.filePath("official tool with spaces.exe");
+        QVERIFY(QFile::copy(qEnvironmentVariable("FAKE_ESPTOOL_PATH"), fake));
+        const QString argsFile = directory.filePath("arguments.jsonl");
+        qputenv("FAKE_ESPTOOL_ARGS_FILE", argsFile.toUtf8());
+        qunsetenv("FAKE_ESPTOOL_MODE");
+
+        Profile profile;
+        profile.port = "COM port 7";
+        profile.esptoolPath = fake;
+        int acquired = 0, released = 0;
+        EsptoolDialog dialog(profile, [&acquired](QString &) { ++acquired; return true; },
+                             [&released] { ++released; });
+        auto *status = dialog.findChild<QLabel *>("esptoolStatus");
+        auto *version = dialog.findChild<QPushButton *>("checkEsptoolVersion");
+        auto *chip = dialog.findChild<QPushButton *>("chipFlashInfo");
+        auto *cancel = dialog.findChild<QPushButton *>("cancelOperation");
+        QVERIFY(status && version && chip && cancel);
+
+        version->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("esptool v5.1.0"), 5000);
+        QCOMPARE(acquired, 0);
+
+        chip->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("finished")
+                                 || status->text().contains("failed"), 5000);
+        QVERIFY2(status->text().contains("finished"),
+            qPrintable(status->text() + "\n"
+                + dialog.findChild<QPlainTextEdit *>("esptoolOutput")->toPlainText()));
+        QCOMPARE(acquired, 1);
+        QCOMPARE(released, 1);
+        QFile recorded(argsFile);
+        QVERIFY(recorded.open(QIODevice::ReadOnly));
+        const auto invocations = recorded.readAll().split('\n');
+        QVERIFY(invocations.size() >= 5);
+        const auto chipArgs = QJsonDocument::fromJson(invocations[2]).array();
+        QVERIFY(chipArgs.contains("COM port 7"));
+        QVERIFY(chipArgs.contains("chip-id"));
+        QVERIFY(chipArgs.contains("--port"));
+        const auto flashArgs = QJsonDocument::fromJson(invocations[3]).array();
+        QVERIFY(flashArgs.contains("flash-id"));
+
+        qputenv("FAKE_ESPTOOL_MODE", "fail");
+        chip->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("failed"), 5000);
+        QCOMPARE(acquired, 2);
+        QCOMPARE(released, 2);
+
+        qputenv("FAKE_ESPTOOL_MODE", "sleep");
+        chip->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("Running chip-id"), 5000);
+        cancel->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("failed"), 5000);
+        QCOMPARE(acquired, 3);
+        QCOMPARE(released, 3);
+        qunsetenv("FAKE_ESPTOOL_MODE");
+        qunsetenv("FAKE_ESPTOOL_ARGS_FILE");
+    }
+    void manualPauseCancelsAnActiveEsptoolHandoff() {
+        qputenv("FAKE_ESPTOOL_MODE", "sleep");
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        AppConfig config; config.ini.path = directory.filePath("settings.ini");
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        config.ini.profiles = {profile};
+        auto *serial = new WindowSerial;
+        SessionWindow window(&config, profile, serial);
+        window.findChild<QPushButton *>("connectButton")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(),
+                                  QString("Connected"), 2000);
+        window.findChild<QPushButton *>("esptoolDiagnostics")->click();
+        auto *dialog = window.findChild<EsptoolDialog *>();
+        QVERIFY(dialog);
+        dialog->findChild<QPushButton *>("chipFlashInfo")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QLabel *>("esptoolStatus")
+            ->text().contains("Running chip-id"), 5000);
+        window.findChild<QPushButton *>("pauseButton")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(),
+                                  QString("Manually paused"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QLabel *>("esptoolStatus")
+            ->text().contains("failed"), 5000);
+        QVERIFY(!serial->opened);
+        qunsetenv("FAKE_ESPTOOL_MODE");
     }
     void loggingSettingsAreVisibleEditableAndPersisted() {
         QTemporaryDir directory;

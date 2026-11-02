@@ -63,6 +63,7 @@ private slots:
         Profile p; QString error;
         QVERIFY(Profile::fromValues("ESP", {}, p, error));
         QCOMPARE(p.baud, 115200); QCOMPARE(p.dataBits, 8);
+        QVERIFY(p.esptoolPath.isEmpty());
         QVERIFY(p.readOnly);
         QVERIFY(!p.autoConnect);
         QVERIFY(p.autoReconnect); QVERIFY(!p.newLogOnReconnect);
@@ -87,6 +88,7 @@ private slots:
         const QList<QPair<QString, QString>> invalid = {
             {"autoReconnect", "yes"}, {"newLogOnReconnect", "yes"}, {"logSeconds", "-1"},
             {"displayQueueBytes", "0"}, {"logName", ""}, {"logName", "../file"},
+            {"esptoolPath", "C:/tools/esptool.exe\n--erase"},
             {"logSeconds", "31536001"}, {"displayQueueBytes", "67108865"}};
         QString error; Profile p;
         for (const auto &value : invalid)
@@ -95,6 +97,7 @@ private slots:
             QVERIFY(!Profile::fromValues("ESP", {{"logName", name}}, p, error));
         Profile original; original.autoReconnect = false; original.newLogOnReconnect = true;
         original.logName = "{date}-{time}-{profile}-{port}-{serial}-{id}";
+        original.esptoolPath = "C:/Tools/esptool.exe";
         original.logSeconds = 120; original.displayQueueBytes = 8192;
         QVERIFY(Profile::fromValues(original.name, original.values(), p, error));
         QCOMPARE(p.values(), original.values());
@@ -448,6 +451,42 @@ private slots:
         QTest::qWait(1100);
         QCOMPARE(fake->enumerations, 3); QCOMPARE(fake->openCalls, 1);
         QCOMPARE(worker.state(), SessionState::ManuallyPaused);
+    }
+    void esptoolHandoffRestoresConnectionUnlessManuallyPaused() {
+        ArtifactDirectory d;
+        auto *fake = new FakeSerial;
+        fake->devices = {{"A", "", "", -1, -1}};
+        SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
+        Profile p; p.port = "A"; p.autoReconnect = false;
+        worker.configure(p, d.path);
+        worker.resume();
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::Connected);
+
+        QString error;
+        QVERIFY(worker.prepareTool(error));
+        QCOMPARE(worker.state(), SessionState::Loaned);
+        QVERIFY(!fake->opened);
+        QVERIFY(!worker.prepareTool(error));
+        fake->devices.clear();
+        worker.finishTool();
+        QCOMPARE(worker.state(), SessionState::Waiting);
+        fake->devices = {{"A", "", "", -1, -1}};
+        worker.poll();
+        QCOMPARE(worker.state(), SessionState::Connected);
+        QVERIFY(fake->opened);
+        QCOMPARE(fake->openCalls, 2);
+
+        QSignalSpy cancelRequests(&worker, &SessionWorker::toolCancelRequested);
+        QVERIFY(worker.prepareTool(error));
+        worker.pause();
+        QCOMPARE(cancelRequests.size(), 1);
+        QCOMPARE(worker.state(), SessionState::Loaned);
+        worker.finishTool();
+        QCOMPARE(worker.state(), SessionState::ManuallyPaused);
+        QVERIFY(!fake->opened);
+        worker.poll();
+        QCOMPARE(fake->openCalls, 2);
     }
     void workerThreadAndWriteTimeout() {
         ArtifactDirectory d;

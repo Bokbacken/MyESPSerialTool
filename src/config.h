@@ -6,6 +6,7 @@
 struct Profile {
     QString name = QStringLiteral("ESP");
     QString port, usbSerial;
+    QString esptoolPath;
     int baud = 115200, dataBits = 8, vid = -1, pid = -1;
     QString parity = QStringLiteral("none"), stopBits = QStringLiteral("1");
     QString flowControl = QStringLiteral("none"), newline = QStringLiteral("lf");
