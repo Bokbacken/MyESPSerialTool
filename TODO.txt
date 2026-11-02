@@ -1,11 +1,11 @@
-Serial ESP Helper — leveransplan, version 0.23.1
+Serial ESP Helper — leveransplan, version 0.24.0
 ================================================
 
 AVGRÄNSNING
 Detta repo började med enbart README och innehåller ingen ESP32-firmware,
 äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
 komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
-Version 0.23.1 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+Version 0.24.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
 SÅ HÅLLER VI BACKLOGGEN AKTUELL
@@ -68,6 +68,10 @@ Kvarvarande verkliga tester (ej påstått utförda):
     icke-noll exitstatus; verifiera portåterställning och att flash är oförändrad.
 [ ] Verifiera resetvarningen på verklig Windows-/ESP-hårdvara: Avbryt ska
     inte köra verktyget, och Fortsätt ska tillåta den valda operationen.
+[ ] Verifiera 0.24.0 med verkliga ESP-IDF-/Arduino-/PlatformIO-paket och merged
+    image: rätt adresser/storlekar, app-passning och tydlig skrivspärr.
+[ ] Jämför läst OTA-layout/otadata med ESP-IDF-verktyg och firmwarets rapport
+    om körande partition; testa NEW/PENDING_VERIFY och rollback efter reset.
 
 ETAPP 2 — avancerade filter och export (delvis implementerad)
 [x] Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader.
@@ -100,19 +104,28 @@ ETAPP 3 — esptool-portöverlämning/chipinfo/rådump (implementerad i 0.23.0)
     Användaråterkoppling: viss ESP-diagnostik i 0.23.0 fungerar, men resetar
     till bootloader och tillbaka. Detta ersätter inte hela acceptansmatrisen.
 
-ETAPP 4 — verifierad flashprogrammering (ej implementerad)
-- Första delsteget: skrivfri förhandsgranskning av ett explicit flashpaket.
-  Visa källfiler, chipmål, storlekar, adresser och berörda erase-sektorer.
-  Avvisa saknade/ändrade filer, okänt format, fel chip, överlapp och intervall
-  utanför flash. Godkända/avvisade paket ska verifieras med fixture-tester.
-- App, bootloader och merged image via verifierat manifest/flasher_args.json/
-  partitionstabell eller uttryckligt användarval, aldrig filnamnsgissningar.
-- Kontrollera chip, storlekar, överlapp och flashadresser.
-- Visa exakt radering/skrivning; kräv bekräftelse.
-- Avbryt vid secure boot/flash encryption utan uttryckligt stöd.
-- Innan skrivning: verifiera enhetens säkerhetsstatus; okänd status ska stoppa
-  operationen. Ny bekräftelse för exakt radering/skrivning krävs utöver resetvarning.
-- Seriell partitionsskrivning är inte verklig OTA; håll begreppen åtskilda.
+ETAPP 4 — verifierad flashprogrammering (första skrivfria delsteget i 0.24.0)
+[x] Offline-förhandsgranskning: explicita filer, chipmål, flashkapacitet,
+    SHA-256, storlekar, adresser och berörda erase-sektorer.
+[x] ESP-IDF flasher_args.json, separata BIN, en app-BIN och merged image via
+    uttryckliga roller/adresser, aldrig filnamnsgissningar.
+[x] Kontrollera bildhuvud/chip/checksumma/bifogad SHA-256, partitionspassning
+    när layout finns, överlapp och intervall. Nya pakettabellen styr app-passning.
+    Merged kontrollerar endast valt bildhuvud; övrigt innehåll är overifierat.
+[x] Avvisa saknade/tomma/ändrade filer och felaktiga deklarerade bildformat.
+    Opak data markeras overifierad. Fixture-tester och filfingeravtryck finns.
+[x] Läsa tabell på explicit adress och visa OTA0/OTA1-adresser/storlekar.
+    MD5 om tillgängligt, alignment och överlapp valideras.
+[x] Läsa båda otadata-sektorer, CRC/sekvens/tillstånd och metadata-kandidat.
+    Gissa aldrig körande/säkert inaktiv slot; rollback/osäkerhet visas.
+[ ] Verifiera enhetens identitet, chip/revision, verklig flashkapacitet,
+    secure boot/flash encryption/anti-rollback och bootloaderkompatibilitet.
+    Okänd eller ej stödd säkerhetsstatus ska stoppa skrivning.
+[ ] Tillförlitlig information från firmware om körande app; säker strategi för
+    inaktiv partitionsskrivning, verifiering och atomisk/redundant OTA-startväxling.
+[ ] Visa exakt radering/skrivning; kräv ny bekräftelse utöver resetvarningen.
+[ ] Faktisk flashskrivning och ändring av otadata. Allt detta är spärrat i 0.24.0.
+    Seriell partitionsskrivning är inte verklig OTA; håll begreppen åtskilda.
 
 ETAPP 5 — Raspberry Pi/avancerad diagnostik (ej implementerad)
 - Separat Linux ARM64-paket; välj och dokumentera OS/version, Qt/runtime,

@@ -34,7 +34,7 @@ signals:
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
-    enum class Operation { Version, ChipAndFlash, PartitionTable, RawDump, PartitionDump };
+    enum class Operation { Version, ChipAndFlash, PartitionTable, OtaInfo, RawDump, PartitionDump };
     struct Step {
         Esptool::Command command;
         QStringList extra;
@@ -46,10 +46,12 @@ private:
     QLineEdit *pathEdit;
     QLineEdit *portEdit;
     QLineEdit *baudEdit;
+    QLineEdit *tableOffset;
     QComboBox *partitionsBox;
     QPlainTextEdit *output;
     QProgressBar *progress;
     QLabel *status;
+    QLabel *otaStatus;
     QPushButton *chipButton;
     QPushButton *partitionButton;
     QPushButton *rawButton;
@@ -57,6 +59,8 @@ private:
     QPushButton *cancelButton;
     QPushButton *versionButton;
     QPushButton *browseButton;
+    QPushButton *otaButton;
+    QPushButton *planButton;
     QProcess process;
     Operation operation = Operation::Version;
     Esptool::Version version;
@@ -73,6 +77,7 @@ private:
     bool portLoaned = false;
     bool handlingResult = false;
     bool closeAfterFinish = false;
+    bool readingOta = false;
 
     void begin(Operation requested);
     void launch(const QStringList &arguments, bool probe);
@@ -89,5 +94,8 @@ private:
     bool createTemporaryOutput();
     bool commitTemporaryOutput();
     bool parsePartitionOutput();
+    bool startOtaRead();
+    bool parseOtaOutput();
+    void clearLayout();
     void updateControls();
 };

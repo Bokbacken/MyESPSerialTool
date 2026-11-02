@@ -1,5 +1,6 @@
 #include "window.h"
 #include "esptool_dialog.h"
+#include "flashplan_dialog.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
@@ -47,17 +48,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.23.1");
+        QCoreApplication::setApplicationVersion("0.24.0");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.23.1"));
+        QVERIFY(window.windowTitle().contains("0.24.0"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.23.1"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.24.0"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -219,6 +220,7 @@ private slots:
         QTest::addColumn<QString>("action");
         QTest::newRow("chip-and-flash") << QString("chipFlashInfo");
         QTest::newRow("partition-table") << QString("readPartitionTable");
+        QTest::newRow("layout-and-ota") << QString("readOtaInfo");
     }
     void diagnosticsRequireResetConfirmation() {
         QFETCH(QString, action);
@@ -307,6 +309,131 @@ private slots:
                 QCOMPARE(dump.readAll(), QByteArray(16, char(0xa5)));
             }
         }
+    }
+    void layoutAndOtaReadsUseExplicitAddressesAndClearStaleSelection() {
+        QTemporaryDir directory;
+        const QString argsFile = directory.filePath("read-args.jsonl");
+        qputenv("FAKE_ESPTOOL_ARGS_FILE", argsFile.toUtf8());
+        qputenv("FAKE_ESPTOOL_MODE", "ota");
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        int acquired = 0, released = 0;
+        EsptoolDialog dialog(profile, [&acquired](QString &) { ++acquired; return true; },
+                             [&released] { ++released; });
+        auto *offset = dialog.findChild<QLineEdit *>("partitionTableOffset");
+        auto *button = dialog.findChild<QPushButton *>("readOtaInfo");
+        auto *status = dialog.findChild<QLabel *>("esptoolStatus");
+        auto *ota = dialog.findChild<QLabel *>("otaSelectionStatus");
+        auto *partitions = dialog.findChild<QComboBox *>("esptoolPartitions");
+        offset->setText("0xa000");
+        acceptResetWarning(&dialog);
+        button->click();
+        QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(), 5000);
+        QVERIFY2(status->text().contains("snapshot read"), qPrintable(status->text()));
+        QCOMPARE(acquired, 1);
+        QCOMPARE(released, 1);
+        QCOMPARE(partitions->count(), 3);
+        QVERIFY(partitions->itemText(1).contains("app/ota-0"));
+        QVERIFY(partitions->itemText(2).contains("app/ota-1"));
+        QVERIFY(partitions->itemText(2).contains("offset 0x20000, size 0x10000"));
+        QVERIFY(ota->text().contains("candidate: OTA1"));
+        QVERIFY(ota->text().contains("NOT proof"));
+        QVERIFY(ota->text().contains("No partition is automatically"));
+        QFile record(argsFile);
+        QVERIFY(record.open(QIODevice::ReadOnly));
+        const auto calls = record.readAll().split('\n');
+        QCOMPARE(calls.size(), 4);
+        const auto tableRead = QJsonDocument::fromJson(calls[1]).array();
+        QVERIFY(tableRead.contains("read-flash"));
+        QVERIFY(tableRead.contains("0xa000"));
+        QVERIFY(tableRead.contains("0xC00"));
+        const auto otaRead = QJsonDocument::fromJson(calls[2]).array();
+        QVERIFY(otaRead.contains("0xd000"));
+        QVERIFY(otaRead.contains("0x2000"));
+
+        for (const auto &mode : {"ota-bad-crc", "ota-encrypted", "ota-ambiguous",
+                                 "ota-short", "ota-read-fail"}) {
+            qputenv("FAKE_ESPTOOL_MODE", mode);
+            acceptResetWarning(&dialog);
+            button->click();
+            QVERIFY(!ota->text().contains("candidate:"));
+            QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(), 5000);
+            QVERIFY2(!ota->text().contains("candidate:"), mode);
+            QVERIFY(ota->text().contains("UNKNOWN") || ota->text().contains("No usable"));
+        }
+        QCOMPARE(acquired, 6);
+        QCOMPARE(released, 6);
+        offset->setText("0x8000");
+        QCOMPARE(partitions->count(), 0);
+        qunsetenv("FAKE_ESPTOOL_MODE");
+        qunsetenv("FAKE_ESPTOOL_ARGS_FILE");
+    }
+
+    void offlinePlanNeedsNoToolPortOrResetAndInvalidatesEdits() {
+        Profile profile;
+        int acquired = 0;
+        EsptoolDialog diagnostics(profile, [&acquired](QString &) { ++acquired; return true; }, [] {});
+        auto *open = diagnostics.findChild<QPushButton *>("openFlashPlan");
+        QVERIFY(open->isEnabled());
+        open->click();
+        auto *plan = diagnostics.findChild<FlashPlanDialog *>();
+        QVERIFY(plan);
+        QVERIFY(!QApplication::activeModalWidget());
+        QCOMPARE(acquired, 0);
+        auto *preview = plan->findChild<QPushButton *>("inspectFlashPlan");
+        auto *recheck = plan->findChild<QPushButton *>("recheckFlashPlan");
+        auto *report = plan->findChild<QPlainTextEdit *>("flashPlanReport");
+        QVERIFY(!recheck->isEnabled());
+        preview->click();
+        QVERIFY(report->toPlainText().contains("PLAN REJECTED"));
+        plan->findChild<QLineEdit *>("planCapacity")->setText("0x400000");
+        QVERIFY(report->toPlainText().contains("Writes remain blocked"));
+        QVERIFY(!recheck->isEnabled());
+        QTemporaryDir directory;
+        const QString dataPath = directory.filePath("data.bin");
+        QFile data(dataPath);
+        QVERIFY(data.open(QIODevice::WriteOnly));
+        QCOMPARE(data.write("opaque data"), qint64(11));
+        data.close();
+        auto *chip = plan->findChild<QComboBox *>("planChip");
+        chip->setCurrentIndex(chip->findData("esp32s3"));
+        QTimer::singleShot(0, plan, [&] {
+            auto *file = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+            QVERIFY(file);
+            file->selectFile(dataPath);
+            QMetaObject::invokeMethod(file, "accept", Qt::DirectConnection);
+        });
+        plan->findChild<QPushButton *>("addFlashFile")->click();
+        preview->click();
+        QVERIFY2(report->toPlainText().contains("WRITE BLOCKED"), qPrintable(report->toPlainText()));
+        QVERIFY(recheck->isEnabled());
+        recheck->click();
+        QVERIFY(report->toPlainText().contains("unchanged"));
+        QVERIFY(data.open(QIODevice::WriteOnly));
+        QCOMPARE(data.write("changed data"), qint64(12));
+        data.close();
+        recheck->click();
+        QVERIFY(report->toPlainText().contains("PLAN INVALIDATED"));
+        QVERIFY(!recheck->isEnabled());
+        preview->click();
+        QVERIFY(recheck->isEnabled());
+        const QString manifestPath = directory.filePath("broken.json");
+        QFile manifest(manifestPath);
+        QVERIFY(manifest.open(QIODevice::WriteOnly));
+        manifest.write("{broken");
+        manifest.close();
+        QTimer::singleShot(0, plan, [&] {
+            auto *file = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+            QVERIFY(file);
+            file->selectFile(manifestPath);
+            QMetaObject::invokeMethod(file, "accept", Qt::DirectConnection);
+        });
+        plan->findChild<QPushButton *>("loadFlashManifest")->click();
+        QVERIFY(report->toPlainText().contains("MANIFEST REJECTED"));
+        QVERIFY(!recheck->isEnabled());
+        QCOMPARE(acquired, 0);
+        plan->close();
     }
     void loggingSettingsAreVisibleEditableAndPersisted() {
         QTemporaryDir directory;

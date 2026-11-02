@@ -1,4 +1,6 @@
 #include "esptool_dialog.h"
+#include "flashplan.h"
+#include "flashplan_dialog.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
@@ -62,15 +64,19 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     : QDialog(parent), profile(p), acquirePort(std::move(acquire)),
       releasePort(std::move(release)), pathEdit(new QLineEdit(p.esptoolPath)),
       portEdit(new QLineEdit(p.port)), baudEdit(new QLineEdit(QString::number(p.baud))),
+      tableOffset(new QLineEdit("0x8000")),
       partitionsBox(new QComboBox), output(new QPlainTextEdit), progress(new QProgressBar),
       status(new QLabel("No esptool operation started.")),
+      otaStatus(new QLabel("OTA selection not read. Running partition: UNKNOWN.")),
       chipButton(new QPushButton("Chip + flash info")),
       partitionButton(new QPushButton("Read partition table")),
       rawButton(new QPushButton("Read raw flash…")),
       partitionDumpButton(new QPushButton("Save selected partition…")),
       cancelButton(new QPushButton("Cancel operation")),
       versionButton(new QPushButton("Check version")),
-      browseButton(new QPushButton("Browse…")) {
+      browseButton(new QPushButton("Browse…")),
+      otaButton(new QPushButton("Read layout + OTA selection")),
+      planButton(new QPushButton("Offline flash plan...")) {
     setWindowTitle("ESP diagnostics — esptool");
     resize(820, 650);
     auto *layout = new QVBoxLayout(this);
@@ -86,6 +92,8 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     baudEdit->setReadOnly(true);
     form->addRow("Port (exclusive while running)", portEdit);
     form->addRow("Baud rate", baudEdit);
+    tableOffset->setObjectName("partitionTableOffset");
+    form->addRow("Explicit partition table address", tableOffset);
     layout->addLayout(form);
 
     auto *commands = new QHBoxLayout;
@@ -101,6 +109,18 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     commands->addWidget(rawButton);
     commands->addStretch();
     layout->addLayout(commands);
+    auto *otaRow = new QHBoxLayout;
+    otaButton->setObjectName("readOtaInfo");
+    planButton->setObjectName("openFlashPlan");
+    otaRow->addWidget(otaButton);
+    otaRow->addWidget(planButton);
+    otaRow->addStretch();
+    layout->addLayout(otaRow);
+    otaStatus->setObjectName("otaSelectionStatus");
+    otaStatus->setTextFormat(Qt::PlainText);
+    otaStatus->setWordWrap(true);
+    otaStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(otaStatus);
     partitionsBox->setObjectName("esptoolPartitions");
     layout->addWidget(partitionsBox);
     auto *saveRow = new QHBoxLayout;
@@ -136,6 +156,13 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     connect(versionButton, &QPushButton::clicked, this, [this] { begin(Operation::Version); });
     connect(chipButton, &QPushButton::clicked, this, [this] { begin(Operation::ChipAndFlash); });
     connect(partitionButton, &QPushButton::clicked, this, [this] { begin(Operation::PartitionTable); });
+    connect(otaButton, &QPushButton::clicked, this, [this] { begin(Operation::OtaInfo); });
+    connect(planButton, &QPushButton::clicked, this, [this] {
+        auto *dialog = new FlashPlanDialog(partitions, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
+    connect(tableOffset, &QLineEdit::textChanged, this, [this] { clearLayout(); });
     connect(rawButton, &QPushButton::clicked, this, [this] {
         if (chooseRawDump()) begin(Operation::RawDump);
     });
@@ -188,6 +215,15 @@ void EsptoolDialog::begin(Operation requested) {
         QMessageBox::warning(this, "Port required", "Select and connect a serial port first.");
         return;
     }
+    if (requested == Operation::PartitionTable || requested == Operation::OtaInfo) {
+        quint64 address = 0;
+        if (!FlashPlan::parseNumber(tableOffset->text(), address)
+            || address % 4096 || address > 0xfffff000ULL) {
+            QMessageBox::warning(this, "Invalid partition table address",
+                "Enter a sector-aligned address in the 32-bit flash address space.");
+            return;
+        }
+    }
     if (requested != Operation::Version) {
         QMessageBox confirmation(QMessageBox::Warning, "Diagnostics may restart the ESP",
             "esptool can reset the ESP into its bootloader and restart it afterwards. "
@@ -200,15 +236,18 @@ void EsptoolDialog::begin(Operation requested) {
         confirmation.button(QMessageBox::Ok)->setText("Continue diagnostics");
         confirmation.setDefaultButton(QMessageBox::Cancel);
         confirmation.setEscapeButton(QMessageBox::Cancel);
-        if (requested == Operation::ChipAndFlash)
+        if (requested == Operation::ChipAndFlash || requested == Operation::OtaInfo)
             confirmation.setInformativeText(
-                "Chip + flash info runs two commands and may cause more than one reset cycle.");
+                "This operation runs two commands and may cause more than one reset cycle. "
+                "Restarts can also affect pending OTA rollback.");
         if (confirmation.exec() != QMessageBox::Ok) {
             tempFile.reset();
             return;
         }
     }
     operation = requested;
+    readingOta = false;
+    if (requested == Operation::PartitionTable || requested == Operation::OtaInfo) clearLayout();
     busy = true;
     status->setText("Checking esptool version…");
     updateControls();
@@ -297,9 +336,21 @@ void EsptoolDialog::processFinished(int exitCode, QProcess::ExitStatus exitStatu
         failOperation(QString("esptool command failed (exit code %1).").arg(exitCode));
         return;
     }
-    if (operation == Operation::PartitionTable && steps.isEmpty()) {
+    if ((operation == Operation::PartitionTable || operation == Operation::OtaInfo) && steps.isEmpty()) {
+        if (readingOta) {
+            if (!parseOtaOutput()) {
+                failOperation("OTA metadata could not be interpreted. No inactive target is assumed.");
+                return;
+            }
+            finishOperation("Partition layout + OTA metadata snapshot read. Running partition remains UNKNOWN.");
+            return;
+        }
         if (!parsePartitionOutput()) {
             failOperation("Partition-table read completed, but parsing failed.");
+            return;
+        }
+        if (operation == Operation::OtaInfo) {
+            if (!startOtaRead()) failOperation("OTA read blocked. See details; no boot selection was changed.");
             return;
         }
         finishOperation("Partition table read and parsed. No flash contents were modified.");
@@ -334,7 +385,7 @@ void EsptoolDialog::prepareOperation() {
     if (operation == Operation::ChipAndFlash) {
         steps << Step{Esptool::Command::ChipId, {}}
               << Step{Esptool::Command::FlashId, {}};
-    } else if (operation == Operation::PartitionTable) {
+    } else if (operation == Operation::PartitionTable || operation == Operation::OtaInfo) {
         destination.clear();
         expectedBytes = 0xC00;
         if (!createTemporaryOutput()) {
@@ -342,7 +393,7 @@ void EsptoolDialog::prepareOperation() {
             return;
         }
         steps << Step{Esptool::Command::ReadFlash,
-            {"0x8000", "0xC00", tempFile->fileName()}};
+            {tableOffset->text().trimmed(), "0xC00", tempFile->fileName()}};
     } else if (operation == Operation::RawDump) {
         quint64 address = 0, size = 0;
         // Values are validated before the operation starts.
@@ -470,11 +521,24 @@ bool EsptoolDialog::commitTemporaryOutput() {
 bool EsptoolDialog::parsePartitionOutput() {
     if (!tempFile) return false;
     QFile file(tempFile->fileName());
-    if (!file.open(QIODevice::ReadOnly)) return false;
+    if (!file.open(QIODevice::ReadOnly) || file.size() != 0xc00) {
+        output->appendPlainText("Partition table read has an unexpected length or cannot be opened.");
+        return false;
+    }
     QString error;
     if (!Esptool::parsePartitionTable(file.readAll(), partitions, error)) {
         output->appendPlainText(error);
         return false;
+    }
+    quint64 address = 0;
+    if (!FlashPlan::parseNumber(tableOffset->text(), address)) return false;
+    for (const auto &partition : partitions) {
+        if (partition.offset < address + 4096
+            && address < quint64(partition.offset) + partition.size) {
+            output->appendPlainText("Partition overlaps the partition table sector; layout rejected.");
+            clearLayout();
+            return false;
+        }
     }
     partitionsBox->clear();
     for (const auto &partition : partitions) {
@@ -483,8 +547,69 @@ bool EsptoolDialog::parsePartitionOutput() {
                  Esptool::partitionTypeName(partition.type, partition.subtype))
             .arg(partition.offset, 0, 16).arg(partition.size, 0, 16).arg(partition.size);
         partitionsBox->addItem(text);
+        output->appendPlainText(text);
     }
     updateControls();
+    return true;
+}
+
+void EsptoolDialog::clearLayout() {
+    partitions.clear();
+    partitionsBox->clear();
+    otaStatus->setText("OTA selection not read. Running partition: UNKNOWN.");
+    updateControls();
+}
+
+bool EsptoolDialog::startOtaRead() {
+    const Esptool::Partition *ota = nullptr;
+    for (const auto &partition : partitions) {
+        if (partition.type != 1 || partition.subtype != 0) continue;
+        if (ota) {
+            output->appendPlainText("Multiple otadata partitions; refusing to choose one.");
+            return false;
+        }
+        ota = &partition;
+    }
+    if (!ota || ota->size != 8192 || ota->flags != 0) {
+        output->appendPlainText("Requires one unencrypted standard 8192-byte ESP-IDF otadata partition. "
+            "Encrypted/custom layouts are not inferred.");
+        return false;
+    }
+    if (!createTemporaryOutput()) {
+        output->appendPlainText("Cannot prepare the OTA metadata output file.");
+        return false;
+    }
+    readingOta = true;
+    steps << Step{Esptool::Command::ReadFlash,
+        {QString("0x%1").arg(ota->offset, 0, 16), "0x2000", tempFile->fileName()}};
+    runNextStep();
+    return true;
+}
+
+bool EsptoolDialog::parseOtaOutput() {
+    if (!tempFile) return false;
+    QFile file(tempFile->fileName());
+    if (!file.open(QIODevice::ReadOnly) || file.size() != 8192) {
+        output->appendPlainText("Cannot read two complete OTA sectors (expected 8192 bytes): "
+            + file.errorString());
+        return false;
+    }
+    Esptool::OtaSelection selection;
+    QString error;
+    if (!Esptool::parseOtaData(file.readAll(), partitions, selection, error)) {
+        output->appendPlainText(error);
+        return false;
+    }
+    QStringList report;
+    report << "Read snapshot: " + selection.explanation;
+    for (int copy = 0; copy < selection.entries.size(); ++copy) {
+        const auto &entry = selection.entries[copy];
+        report << QString("otadata copy %1: seq=%2, state=%3, CRC=%4, usable=%5")
+            .arg(copy).arg(entry.sequence).arg(Esptool::otaStateName(entry.state))
+            .arg(entry.crcValid ? "OK" : "INVALID", entry.valid ? "yes" : "no");
+    }
+    otaStatus->setText(report.join('\n'));
+    output->appendPlainText(report.join('\n'));
     return true;
 }
 
@@ -522,6 +647,9 @@ void EsptoolDialog::updateControls() {
     const bool configured = !configuredPath().isEmpty();
     pathEdit->setEnabled(idle);
     browseButton->setEnabled(idle);
+    tableOffset->setEnabled(idle);
+    otaButton->setEnabled(idle && configured && !portEdit->text().isEmpty());
+    planButton->setEnabled(idle);
     versionButton->setEnabled(idle && configured);
     for (auto *button : {chipButton, partitionButton, rawButton})
         button->setEnabled(idle && configured && !portEdit->text().isEmpty());

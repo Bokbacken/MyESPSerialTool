@@ -4,6 +4,8 @@
 #include <QJsonDocument>
 #include <QTextStream>
 #include <QThread>
+#include <QtEndian>
+#include <algorithm>
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
@@ -54,7 +56,36 @@ int main(int argc, char **argv) {
         if (!ok) return 3;
         QFile output(args[commandIndex + 3]);
         if (!output.open(QIODevice::WriteOnly)) return 4;
-        const QByteArray bytes(int(size), char(0xa5));
+        if (size == 8192 && mode == "ota-read-fail") return 7;
+        QByteArray bytes(int(size), char(0xa5));
+        if (mode.startsWith("ota") && size == 0xc00) {
+            bytes.fill(char(0xff));
+            const int count = mode == "ota-ambiguous" ? 4 : 3;
+            for (int i = 0; i < count; ++i) {
+                auto *entry = reinterpret_cast<uchar *>(bytes.data() + i * 32);
+                std::fill(entry, entry + 32, 0);
+                entry[0] = 0xaa; entry[1] = 0x50;
+                const bool metadata = i == 0 || i == 3;
+                entry[2] = metadata ? 1 : 0;
+                entry[3] = metadata ? 0 : quint8(0x10 + i - 1);
+                const quint32 offset = i == 0 ? 0xd000 : quint32(i * 0x10000);
+                qToLittleEndian(offset, entry + 4);
+                qToLittleEndian<quint32>(metadata ? 8192 : 65536, entry + 8);
+                const QByteArray label = metadata ? "otadata" : QByteArray("ota_") + QByteArray::number(i - 1);
+                std::copy(label.begin(), label.end(), entry + 12);
+                if (metadata && mode == "ota-encrypted") qToLittleEndian<quint32>(1, entry + 28);
+            }
+        } else if (mode.startsWith("ota") && size == 8192) {
+            bytes.fill(char(0xff));
+            for (int i = 0; i < 2; ++i) {
+                auto *entry = reinterpret_cast<uchar *>(bytes.data() + i * 4096);
+                qToLittleEndian<quint32>(i + 1, entry);
+                qToLittleEndian<quint32>(2, entry + 24);
+                const quint32 crc = i == 0 ? 0x4743989a : 0x55f63774;
+                qToLittleEndian<quint32>(mode == "ota-bad-crc" ? 0 : crc, entry + 28);
+            }
+            if (mode == "ota-short") bytes.chop(1);
+        }
         if (output.write(bytes) != bytes.size()) return 5;
         QTextStream(stdout) << "Read " << size << " bytes\n";
         return 0;

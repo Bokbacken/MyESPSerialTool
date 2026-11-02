@@ -9,7 +9,7 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Serial ESP Helper");
-    QCoreApplication::setApplicationVersion("0.23.1");
+    QCoreApplication::setApplicationVersion("0.24.0");
     qRegisterMetaType<Profile>();
     qRegisterMetaType<SessionState>();
     QCommandLineParser parser;

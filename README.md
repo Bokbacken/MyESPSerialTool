@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.23.1
+# Serial ESP Helper — 0.24.0
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.23.1 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.24.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
@@ -87,7 +87,8 @@ innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behåll
 sökvägen.
 
 Diagnostikfönstret kan visa chip-/revisions- och flash-ID-information, läsa
-ESP-IDF:s partitionstabell från standardadressen `0x8000`, läsa ett uttryckligt
+ESP-IDF:s partitionstabell från adressen i **Explicit partition table address**
+(standard `0x8000`), läsa ett uttryckligt
 adressintervall eller spara en hel vald partition, inklusive en eventuell
 coredump-partition. Rådumpar verifieras mot förväntad storlek och skrivs
 atomiskt till målfiler. Förlopp, fullständig stdout/stderr och exitstatus visas.
@@ -96,7 +97,8 @@ atomiskt till målfiler. Förlopp, fullständig stdout/stderr och exitstatus vis
 bekräftelse med **Cancel** som standard. esptool kan starta om ESP:n till
 bootloaderläge och tillbaka; körande firmware och serialinsamling avbryts,
 och osparat tillstånd i RAM kan gå förlorat. **Chip + flash info** kör två
-kommandon och kan ge flera resetcykler. Versionskontrollen påverkar inte
+kommandon och kan ge flera resetcykler, liksom **Read layout + OTA selection**.
+Omstarter kan dessutom påverka pågående OTA-rollback. Versionskontrollen påverkar inte
 enheten och kräver därför ingen sådan bekräftelse. Bootloaderläge kan inte
 avgöras tillförlitligt från terminaltrafik; tidigare diagnostik eller
 bootmeddelanden gör inte nästa operation reset-fri.
@@ -108,6 +110,57 @@ verktyget och hindrar återanslutning. All inmatning skickas som separata
 och flashläsningskommandon: den kan inte radera eller skriva flash. En rå
 coredump sparas som bytes; avkodning kräver separat matchande ELF och ingår
 inte här.
+
+### OTA-layout och skrivfri flashplan (etapp 4, första delsteget)
+
+**Read layout + OTA selection** läser först partitionstabellen och sedan
+de två sektorerna i en entydig, standardiserad `otadata`-partition.
+Partitionslistan och utdataloggen visar OTA0/OTA1:s startadresser och storlekar
+från den faktiska tabellen, inte hårdkodade exempel. OTA0 har subtype `0x10`,
+OTA1 `0x11`. Tabellens MD5 kontrolleras när den finns; överlapp och felaktig
+alignment avvisas.
+
+Vyn visar båda `otadata`-posternas sekvens, tillstånd och CRC samt
+**ESP-IDF metadata candidate**, när uppgifterna går att tolka.
+Det är **inte bevis på körande eller senast körd partition**:
+rollback, anti-rollback och bildvalidering kan välja en annan app.
+NEW/PENDING_VERIFY markeras särskilt. Tomma, korrupta eller okända metadata
+ger ingen säker kandidat; krypterad, tvetydig eller anpassad OTA-layout tolkas
+inte automatiskt. Ingen partition betecknas därför automatiskt som säker
+att skriva över. Uppgifterna är en läst ögonblicksbild, inte kontinuerlig övervakning.
+
+**Offline flash plan...** kan användas helt utan esptool eller ansluten enhet.
+Välj uttryckligen chip och flashkapacitet i byte, till exempel `0x800000`.
+Fyra indataflöden stöds för förhandsgranskning:
+
+- ESP-IDF-byggkatalog: välj dess `flasher_args.json`; relativa filer och
+  adresser hämtas från manifestet. Roller hämtas bara från uttryckliga
+  `app`/`bootloader`/`partition-table`-poster; övriga filer förblir opak data.
+- Separata Arduino-/PlatformIO-BIN: lägg till varje fil och välj roll och
+  flashadress uttryckligen. Filnamnet avgör aldrig rollen.
+- En app-BIN: välj **App**, ange startadressen och jämför med en inläst
+  app-partition. Det är ingen automatisk uppdatering av inaktiv OTA-slot.
+- Merged/full image: välj **Merged image**, startadress och det explicita
+  bildhuvudets offset **inne i filen** (exempelvis `0x1000` om bootloadern
+  börjar där). Bara den valda ESP-bilden valideras; alla inbäddade bilder och
+  partitionstabellen är **inte** verifierade. Hela filspannet inklusive
+  padding visas som potentiellt berört.
+
+**Inspect plan** visar filstorlekar, SHA-256, skrivintervall och erase-sektorer.
+App-/bootloaderhuvuden kontrolleras mot valt chip samt XOR-checksumma och
+eventuell bifogad SHA-256. Detta är inte signatur- eller hårdvaruverifiering.
+En separat partitionstabell i paketet används för appens storlekskontroll i
+stället för den gamla lästa layouten. Saknas layout är partitionspassning
+uttryckligen overifierad. Överlapp, fel chip, trasiga bilder, saknade/tomma filer
+och intervall utanför angiven kapacitet avvisas. Filer är begränsade till 1 GiB.
+**Recheck file fingerprints** upptäcker ändrade filer; ändrade indata kräver
+ny förhandsgranskning. Manifestets flashläge/frekvens och övriga skrivargument
+används inte och verifieras inte som en komplett framtida skrivkonfiguration.
+
+**WRITE BLOCKED är avsiktligt:** 0.24.0 kan varken flasha, radera eller ändra
+OTA-startval. Verifierad enhetsidentitet/chip/revision, säkerhetsstatus,
+bootloaderkompatibilitet, verkligt körande app och säker rollback-hantering
+återstår innan inaktiv partitionsskrivning och startväxling kan erbjudas.
 
 Inställningar ligger i `SerialESPHelper.ini` bredvid programmet. **Save INI as…**
 väljer en annan plats uttryckligen; programmet flyttar inte inställningar i
@@ -283,7 +336,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.23.1`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.24.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

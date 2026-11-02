@@ -1,6 +1,8 @@
 #include "esptool.h"
 #include <QTest>
 #include <algorithm>
+#include <QCryptographicHash>
+#include <QtEndian>
 
 class EsptoolTests : public QObject {
     Q_OBJECT
@@ -56,6 +58,120 @@ private slots:
         QVERIFY(error.contains("magic"));
         QVERIFY(!Esptool::parsePartitionTable(QByteArray(17, char(0xff)), partitions, error));
         QVERIFY(error.contains("incomplete"));
+    }
+    void correctOtaSubtypeNames() {
+        QCOMPARE(Esptool::partitionTypeName(0, 0x10), QString("app/ota-0"));
+        QCOMPARE(Esptool::partitionTypeName(0, 0x11), QString("app/ota-1"));
+        QCOMPARE(Esptool::partitionTypeName(0, 0x1f), QString("app/ota-15"));
+        QCOMPARE(Esptool::partitionTypeName(0, 0x20), QString("app/test"));
+        QCOMPARE(Esptool::partitionTypeName(1, 0x82), QString("data/spiffs"));
+    }
+
+    void partitionTableChecksumAndOverlapValidation() {
+        QByteArray bytes(96, char(0xff));
+        auto *entry = reinterpret_cast<uchar *>(bytes.data());
+        std::fill(entry, entry + 32, 0);
+        entry[0] = 0xaa; entry[1] = 0x50; entry[3] = 0x10;
+        qToLittleEndian<quint32>(0x10000, entry + 4);
+        qToLittleEndian<quint32>(0x10000, entry + 8);
+        bytes[32] = char(0xeb); bytes[33] = char(0xeb);
+        bytes.replace(48, 16, QCryptographicHash::hash(bytes.left(32), QCryptographicHash::Md5));
+        QVector<Esptool::Partition> partitions;
+        QString error;
+        QVERIFY2(Esptool::parsePartitionTable(bytes, partitions, error), qPrintable(error));
+        bytes[48] = char(bytes[48] ^ 1);
+        QVERIFY(!Esptool::parsePartitionTable(bytes, partitions, error));
+        QVERIFY(error.contains("MD5"));
+        bytes.replace(32, 32, bytes.left(32));
+        QVERIFY(!Esptool::parsePartitionTable(bytes, partitions, error));
+        QVERIFY(error.contains("Overlapping"));
+    }
+
+    void otaMetadataUsesBothCrcCheckedSectorsAndNeverClaimsRunning() {
+        const QVector<Esptool::Partition> partitions{
+            {0, 0x10, 0x10000, 0x10000, "ota0", 0},
+            {0, 0x11, 0x20000, 0x10000, "ota1", 0}};
+        QByteArray bytes(8192, char(0xff));
+        auto *first = reinterpret_cast<uchar *>(bytes.data());
+        auto *second = first + 4096;
+        qToLittleEndian<quint32>(1, first);
+        qToLittleEndian<quint32>(2, first + 24);
+        qToLittleEndian<quint32>(0x4743989a, first + 28);
+        qToLittleEndian<quint32>(2, second);
+        qToLittleEndian<quint32>(2, second + 24);
+        qToLittleEndian<quint32>(0x55f63774, second + 28);
+        QString error;
+        Esptool::OtaSelection selection;
+        QVERIFY(Esptool::parseOtaData(bytes, partitions, selection, error));
+        QCOMPARE(selection.selectedSlot, 1);
+        QVERIFY(selection.entries[0].crcValid);
+        QVERIFY(selection.entries[1].crcValid);
+        QVERIFY(selection.explanation.contains("NOT proof"));
+        QVERIFY(selection.explanation.contains("No partition is automatically"));
+        qToLittleEndian<quint32>(1, second + 24);
+        QVERIFY(Esptool::parseOtaData(bytes, partitions, selection, error));
+        QVERIFY(selection.explanation.contains("Rollback-sensitive"));
+        qToLittleEndian<quint32>(4, second + 24);
+        QVERIFY(Esptool::parseOtaData(bytes, partitions, selection, error));
+        QCOMPARE(selection.selectedSlot, 0);
+        qToLittleEndian<quint32>(0, first + 28);
+        QVERIFY(Esptool::parseOtaData(bytes, partitions, selection, error));
+        QCOMPARE(selection.selectedSlot, -1);
+        QVERIFY(selection.explanation.contains("No usable"));
+        QVERIFY(!Esptool::parseOtaData(bytes.left(4096), partitions, selection, error));
+        const QVector<Esptool::Partition> gap{{0, 0x11, 0x10000, 0x10000, "", 0}};
+        QVERIFY(!Esptool::parseOtaData(bytes, gap, selection, error));
+    }
+
+    void otaStatesAndRedundancy_data() {
+        QTest::addColumn<quint32>("sequence");
+        QTest::addColumn<quint32>("state");
+        QTest::addColumn<quint32>("crc");
+        QTest::addColumn<int>("slot");
+        QTest::addColumn<QString>("explanation");
+        QTest::newRow("erased") << quint32(0xffffffff) << quint32(0xffffffff)
+            << quint32(0xffffffff) << -1 << QString("No usable");
+        QTest::newRow("new-sequence-wrap") << quint32(3) << quint32(0)
+            << quint32(0xed4a5011) << 0 << QString("Rollback-sensitive");
+        QTest::newRow("undefined-with-valid-crc") << quint32(2) << quint32(0xffffffff)
+            << quint32(0x55f63774) << 1 << QString("UNDEFINED");
+        QTest::newRow("invalid") << quint32(2) << quint32(3)
+            << quint32(0x55f63774) << 0 << QString("sequence 1");
+        QTest::newRow("unknown") << quint32(2) << quint32(5)
+            << quint32(0x55f63774) << -1 << QString("Unknown OTA state");
+        QTest::newRow("tie-prefers-copy-zero") << quint32(1) << quint32(1)
+            << quint32(0x4743989a) << 0 << QString("sequence 1, VALID");
+    }
+
+    void otaStatesAndRedundancy() {
+        QFETCH(quint32, sequence);
+        QFETCH(quint32, state);
+        QFETCH(quint32, crc);
+        QFETCH(int, slot);
+        QFETCH(QString, explanation);
+        const QVector<Esptool::Partition> partitions{
+            {0, 0x10, 0x10000, 0x10000, "", 0},
+            {0, 0x11, 0x20000, 0x10000, "", 0}};
+        QByteArray bytes(8192, char(0xff));
+        auto *entry = reinterpret_cast<uchar *>(bytes.data());
+        if (sequence != 0xffffffff) {
+            qToLittleEndian<quint32>(1, entry);
+            qToLittleEndian<quint32>(2, entry + 24);
+            qToLittleEndian<quint32>(0x4743989a, entry + 28);
+        }
+        entry += 4096;
+        qToLittleEndian(sequence, entry);
+        qToLittleEndian(state, entry + 24);
+        qToLittleEndian(crc, entry + 28);
+        Esptool::OtaSelection selection;
+        QString error;
+        QVERIFY(Esptool::parseOtaData(bytes, partitions, selection, error));
+        QCOMPARE(selection.selectedSlot, slot);
+        QVERIFY2(selection.explanation.contains(explanation), qPrintable(selection.explanation));
+        auto duplicate = partitions;
+        duplicate << partitions.first();
+        QVERIFY(!Esptool::parseOtaData(bytes, duplicate, selection, error));
+        QVERIFY(error.contains("Duplicate"));
     }
 };
 
