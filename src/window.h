@@ -11,6 +11,7 @@ class QLabel;
 class QPlainTextEdit;
 class QPushButton;
 class QTextEdit;
+class QLineEdit;
 
 class AppConfig : public QObject {
     Q_OBJECT
@@ -31,6 +32,7 @@ public:
 private slots:
     void applyState(SessionState state);
 private:
+    enum class ExportMode { Buffer, Selection, Filtered };
     AppConfig *config;
     Profile settings;
     std::unique_ptr<Terminal> terminal;
@@ -39,21 +41,27 @@ private:
     SessionWorker *worker;
     SessionState state = SessionState::Disconnected;
     QComboBox *profiles, *port, *baud, *sendText, *newline;
-    QCheckBox *readOnly, *echo, *follow, *hexSend;
+    QCheckBox *readOnly, *echo, *follow, *hexSend, *autoReconnect;
     QLabel *status, *identity, *logStatus;
     QPushButton *sendButton;
     QTextEdit *view;
     QPlainTextEdit *events;
     QTimer *renderTimer;
+    QLineEdit *terminalFilter;
+    QCheckBox *filterCase;
     QStringList availablePorts;
+    QString logPath, logFault;
     QList<QWidget *> connectionEditors;
     void loadProfile(const Profile &profile);
     bool collect();
     void refreshProfiles();
     void refreshPorts();
-    void advanced();
+    void advanced(int tab = 0);
+    void updateLogStatus();
     void connectSession();
     void sendMessage();
     void render();
+    void renderView();
+    void exportTerminal(ExportMode mode);
     void addEvent(const QString &message);
 };

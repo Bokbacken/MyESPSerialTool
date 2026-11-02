@@ -34,7 +34,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    uppdateras automatiskt, men portfältet är redigerbart så att en frånkopplad
    port kan anges i förväg. Baudrate är också redigerbar.
 4. Standardinställningen är 115200 baud, 8 databitar, ingen paritet, 1 stoppbit,
-   ingen flödeskontroll och **Read-only**. Öppna **Advanced…** för fler
+   ingen flödeskontroll och **Read-only**. Öppna **Settings…** för fler
    serialinställningar och loggning. Kontrollera DTR/RTS: de kan påverka reset
    på ESP-kort. Spara med **Save profile** för att behålla ändringarna i INI-filen.
 5. Klicka **Connect / Resume** för att ansluta. Inkommande data visas i
@@ -52,12 +52,14 @@ egna villkor. Detta är inte juridisk rådgivning.
 
 ### Automatisk anslutning och profiler
 
-När en profil väl har anslutit återansluter sessionen automatiskt efter
-frånkoppling eller omstart av enheten. Detta gäller även om automatisk anslutning
-är avstängd. **Manual pause** blockerar återanslutning tills du uttryckligen
-klickar **Connect / Resume** igen.
+Rutan **Reconnect automatically after connection loss** styr återanslutning
+för just detta sessionsfönster. Den är på som standard och kan ändras även
+under anslutning utan att porten öppnas om. Avmarkering medan sessionen väntar
+på en bortkopplad enhet avbryter väntan. **Manual pause** blockerar alltid
+återanslutning tills du uttryckligen klickar **Connect / Resume** igen.
+Spara med **Save profile** för att behålla inställningen (`autoReconnect`).
 
-Öppna **Advanced…** och aktivera automatisk anslutning om profilen dessutom ska
+Öppna **Settings… → Connection** och aktivera automatisk anslutning om profilen dessutom ska
 ansluta när dess fönster öppnas och försöka igen om den första anslutningen
 misslyckas. Spara profilen för att behålla valet. Standard är av: fönstret
 ansluter inte vid start, och ett manuellt första anslutningsförsök görs en gång
@@ -75,6 +77,61 @@ COM-nummer.
 Inställningar ligger i `SerialESPHelper.ini` bredvid programmet. **Save INI as…**
 väljer en annan plats uttryckligen; programmet flyttar inte inställningar i
 bakgrunden. `example.ini` dokumenterar profilnycklar och standardvärden.
+
+### Loggningsinställningar
+
+**Logging settings…** öppnar direkt loggningsfliken i **Settings…**. Dialogen
+kan öppnas även under pågående anslutning. **Cancel** ändrar ingenting;
+**OK** pausar sessionen och tillämpar inställningarna. Klicka därefter
+**Connect / Resume** och **Save profile** om ändringarna ska finnas kvar nästa gång.
+
+Aktivera **Exact raw receive logging** för att spara trafiken. Standard är av;
+statusfältet ovanför terminalen visar tydligt om trafikloggning är av, väntar
+eller är på och visar filens fullständiga sökväg. **Open log folder** öppnar
+loggmappen. En `.raw`-fil skapas när de första mottagna byten skrivs.
+Loggningen avser mottagna data, inte skickade kommandon.
+
+På loggningsfliken finns följande val:
+
+- Mapp: absolut sökväg eller relativt INI-filens katalog.
+- Filnamnsmall utan filändelse, exempelvis `{profile}-{date}-{time}`.
+  Tillåtna fält är `{profile}`, `{date}`, `{time}`, `{port}`, `{serial}` och
+  `{id}`. Datum/tid är datorns UTC. Ett unikt ID ingår alltid för att
+  samtidiga sessioner inte ska skriva över varandra; osäkra tecken i
+  profil-/enhetsnamn ersätts med understreck.
+- Maximal råsegmentstorlek i byte och maximal segmenttid i sekunder.
+  `0` sekunder stänger av tidsrotation. Den gräns som nås först roterar loggen;
+  tidsrotation sker först när nya data tas emot, inte genom tomma timerfiler.
+- Rullande lagring: antal avslutade segment att behålla **utöver den aktiva
+  filen**. Vid rotation blir föregående segment `.raw.1`, därefter `.raw.2`
+  osv. Äldsta segment raderas. Gränsen gäller samma loggserie, inte andra
+  sessioners loggar; metadata/textfiler är separata sidofiler.
+- Ny logg vid återanslutning: av innebär fortsatt skrivning i samma loggserie
+  med oförändrade rotationsgränser. På skapar en ny serie med nytt unikt namn.
+  Manuell paus/ny Connect eller ändrade inställningar startar alltid en ny serie.
+- Läsbar UTF-8-textlogg, tidsmetadata och storlek på diskens skrivkö.
+
+### Terminalbuffert, filter och export
+
+**Settings… → Terminal** innehåller antal lagrade terminalrader, kolumngräns
+och storlek på terminalens mottagningskö. Standard är 2000 rader, 4096
+kolumner och 262144 byte i kön. Terminalen har dessutom ett fast tak på
+1048576 textceller. Äldre rader kan försvinna ur vyn när gränserna nås;
+det påverkar inte diskloggen.
+Byte av loggningsinställningar rensar inte terminalbufferten. Om dess gränser
+minskas tas överskjutande äldre rader/kolumner bort.
+
+Skriv i sökfältet under terminalen för att visa rader som innehåller texten.
+**Match case** väljer skiftlägeskänslighet. Detta är vanlig textsökning,
+inte regex eller ett booleskt filteruttryck. Töm fältet för att återställa
+den ofiltrerade vyn. Filtrerad visning använder oformaterad text utan ANSI-färger.
+
+**Save whole buffer…** sparar hela den kvarvarande terminalbufferten, oavsett
+filter. **Save selection…** sparar den markerade texten från vyn.
+**Save filtered rows…** sparar enbart träffande rader. Exporten är en UTF-8-ögonblicksbild
+utan ANSI-formatering, inte en exakt råbyte-logg och inte hela sessionens historik
+om äldre rader redan rullat ur bufferten. Råloggning och mottagning fortsätter
+oberoende av filter/export; exporten ändrar aldrig befintliga råloggar.
 
 Om INI-katalogen inte är skrivbar visas ett fel och du får välja en annan fil;
 programmet flyttar inte inställningarna till AppData i smyg. Säkerhetskopiera

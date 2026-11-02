@@ -1,5 +1,25 @@
 #include "terminal.h"
 #include <algorithm>
+#include <QSaveFile>
+#include <QStringList>
+
+QString filterTerminalLines(const QString &text, const QString &query, Qt::CaseSensitivity sensitivity) {
+    if (query.isEmpty()) return text;
+    QStringList matches;
+    for (const auto &line : text.split('\n'))
+        if (line.contains(query, sensitivity)) matches << line;
+    return matches.join('\n');
+}
+bool saveTerminalText(const QString &path, const QString &text, QString &error) {
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    const auto bytes = text.toUtf8();
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        error = "Cannot save terminal export: " + path + ": " + file.errorString();
+        return false;
+    }
+    return true;
+}
 
 static QString visibleByte(unsigned char b) {
     return QString("\\x%1").arg(b, 2, 16, QLatin1Char('0')).toUpper().replace("\\X", "\\x");
@@ -39,6 +59,16 @@ Terminal::Terminal(int rows, int columns)
 void Terminal::clear() {
     lines = {QVector<Cell>{}}; row = column = 0; color = -1; bold = false;
     parse = Text; sequence.clear(); decoder = Utf8Visible{};
+}
+void Terminal::setLimits(int rows, int columns) {
+    maxRows = std::clamp(rows, 1, 10000);
+    maxColumns = std::clamp(columns, 1, 16384);
+    const int removed = qMax(0, int(lines.size()) - maxRows);
+    if (removed > 0) lines.remove(0, removed);
+    row = qMax(0, row - removed); column = qMin(column, maxColumns);
+    for (auto &line : lines)
+        if (line.size() > maxColumns) line.resize(maxColumns);
+    boundCells();
 }
 void Terminal::feed(const QByteArray &bytes) {
     // Chunk even direct callers so bounds do not depend on the transport's chunk size.

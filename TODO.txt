@@ -32,6 +32,17 @@ ETAPP 1 — implementeras i denna leverans
 - Abstraherad serialtransport och automatiserade tester.
 - GitHub Actions-artefakter och separat explicit release med checksummor.
 
+IMPLEMENTERADE FÖRBÄTTRINGAR
+[x] Synlig, profilsparad återanslutning per session, skild från autostart.
+[x] Inställningsflikar för anslutning, loggning och terminal; tillgängliga under anslutning.
+[x] Tydlig trafikloggstatus/sökväg, mappval och öppna loggmapp.
+[x] Filnamnsmall med UTC-datum/tid, profil, port, serienummer och unikt ID.
+[x] Råsegmentrotation på storlek/tid och rullande lagring per loggserie.
+[x] Val mellan ny loggserie och fortsatt logg vid automatisk återanslutning.
+[x] Inställningar för terminalrader, kolumner och separat mottagningskö.
+[x] Export av hela terminalbufferten, markering eller textsökningens träffrader.
+    Enkel textsökning är klar; avancerad filterparser nedan återstår.
+
 VERIFIERING FÖRE PUBLICERAD PRODUKTSTATUS
 Automatiskt: CMake/QtTest, fake-transport, Windows-build och deployment-smoke.
 Kvarvarande verkliga tester (ej påstått utförda):
@@ -40,6 +51,9 @@ Kvarvarande verkliga tester (ej påstått utförda):
 [ ] Två riktiga serialenheter samtidigt, hög trafik utan sammanblandning.
 [ ] Fragmenterad UTF-8, binärdata, partiella rader, ANSI från riktig ESP.
 [ ] Koppla bort/åter USB, omstart av ESP, ändrat COM-nummer.
+[ ] Verifiera av/på för återanslutning, fortsatt/ny loggserie och filrotation
+    med verklig trafik; andra loggserier ska aldrig raderas av retention.
+[ ] Kontrollera flikar och exportdialog på liten Windows-skärm/hög DPI.
 [ ] Manuell paus hindrar återanslutning; återuppta fungerar.
 [ ] Saknat/duplicerat USB-serienummer och upptagen/åtkomstnekad port.
 [ ] DTR/RTS på S3-kort: ingen oavsiktlig resetpuls vid read-only/paus.
@@ -49,7 +63,9 @@ Kvarvarande verkliga tester (ej påstått utförda):
 [ ] Skrivskyddad INI-katalog, atomisk ersättning/backup och antivirus-lås.
 [ ] Verifiera arkivets licenser och motsvarande Qt-källor före distribution.
 
-ETAPP 2 — filter och export (ej implementerad)
+ETAPP 2 — avancerade filter och export (delvis implementerad)
+- Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader är klara.
+  Nedan gäller utökad filtrering/export.
 - Riktig parser: ! före && före ||; parenteser, citerade strängar,
   escape-regler för citattecken/backslash och syntaxfel med position.
 - Exempel: ("ord1" && "ord2") || ("ord3" && !"ord4").

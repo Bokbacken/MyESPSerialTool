@@ -65,6 +65,7 @@ private slots:
         QCOMPARE(p.baud, 115200); QCOMPARE(p.dataBits, 8);
         QVERIFY(p.readOnly);
         QVERIFY(!p.autoConnect);
+        QVERIFY(p.autoReconnect); QVERIFY(!p.newLogOnReconnect);
         QCOMPARE(p.parity, QString("none")); QCOMPARE(p.flowControl, QString("none"));
         const QMap<QString, QString> invalid = {{"baud", "115200junk"}, {"dataBits", "9"},
             {"readOnly", "yes"}, {"autoConnect", "yes"}, {"parity", "banana"}, {"stopBits", "3"},
@@ -81,6 +82,121 @@ private slots:
         QVERIFY(Profile::fromValues("ESP", {{"usbSerial", "ABC"}, {"vid", "10"}, {"pid", "20"}}, p, error));
         QVERIFY(Profile::fromValues("ESP", {{"readOnly", "true"}, {"flowControl", "hardware"}}, p, error));
         QVERIFY(Profile::fromValues("ESP", {{"readOnly", "false"}, {"flowControl", "hardware"}}, p, error));
+    }
+    void loggingAndReconnectSettingsValidation() {
+        const QList<QPair<QString, QString>> invalid = {
+            {"autoReconnect", "yes"}, {"newLogOnReconnect", "yes"}, {"logSeconds", "-1"},
+            {"displayQueueBytes", "0"}, {"logName", ""}, {"logName", "../file"},
+            {"logSeconds", "31536001"}, {"displayQueueBytes", "67108865"}};
+        QString error; Profile p;
+        for (const auto &value : invalid)
+            QVERIFY2(!Profile::fromValues("ESP", {{value.first, value.second}}, p, error), qPrintable(value.first));
+        for (const auto &name : {"{unknown}", "C:\\log", "{profile}.raw", "{date", "CON.txt"})
+            QVERIFY(!Profile::fromValues("ESP", {{"logName", name}}, p, error));
+        Profile original; original.autoReconnect = false; original.newLogOnReconnect = true;
+        original.logName = "{date}-{time}-{profile}-{port}-{serial}-{id}";
+        original.logSeconds = 120; original.displayQueueBytes = 8192;
+        QVERIFY(Profile::fromValues(original.name, original.values(), p, error));
+        QCOMPARE(p.values(), original.values());
+        p.name = "ESP/{date}"; p.port = "/dev/ttyACM0"; p.usbSerial = "SER:1";
+        const auto time = QDateTime::fromString("2026-01-02T03:04:05.006Z", Qt::ISODateWithMs);
+        QCOMPARE(logFileStem(p, time, "unique"),
+                 QString("20260102-030405-006-ESP__date_-_dev_ttyACM0-SER_1-unique"));
+        p.logName = "{profile}";
+        QVERIFY(logFileStem(p, time, "unique").endsWith("-unique"));
+    }
+    void timeAndSizeRotationKeepOnlyThisLogSet() {
+        ArtifactDirectory d;
+        Profile p; p.logBytes = 4; p.logSeconds = 10; p.logRetention = 1;
+        const auto time = QDateTime::fromString("2026-01-02T03:04:05Z", Qt::ISODate);
+        QString error;
+        QVERIFY(writeFile(d.file("other.raw"), "untouched"));
+        RotatingSink sink(p, d.file("capture"));
+        QVERIFY(sink.append("ab", time, error));
+        QVERIFY(sink.append("c", time.addSecs(9), error));
+        QVERIFY(!QFileInfo::exists(d.file("capture.raw.1")));
+        QVERIFY(sink.append("d", time.addSecs(10), error));
+        QCOMPARE(readFile(d.file("capture.raw.1")), QByteArray("abc"));
+        QCOMPARE(readFile(d.file("capture.raw")), QByteArray("d"));
+        QVERIFY(sink.append("efgh", time.addSecs(11), error));
+        QCOMPARE(readFile(d.file("capture.raw.1")), QByteArray("defg"));
+        QCOMPARE(readFile(d.file("capture.raw")), QByteArray("h"));
+        QVERIFY(sink.append("i", time.addSecs(20), error));
+        QCOMPARE(readFile(d.file("capture.raw")), QByteArray("hi"));
+        QVERIFY(sink.append("j", time.addSecs(21), error));
+        QCOMPARE(readFile(d.file("capture.raw.1")), QByteArray("hi"));
+        QCOMPARE(readFile(d.file("capture.raw")), QByteArray("j"));
+        QVERIFY(!QFileInfo::exists(d.file("capture.raw.2")));
+        QCOMPARE(readFile(d.file("other.raw")), QByteArray("untouched"));
+    }
+    void reconnectAndLogContinuation_data() {
+        QTest::addColumn<bool>("startup");
+        QTest::addColumn<bool>("reconnect");
+        QTest::addColumn<bool>("newLog");
+        for (bool startup : {false, true})
+            for (bool reconnect : {false, true})
+                for (bool newLog : {false, true})
+                    QTest::newRow(qPrintable(QString("%1-%2-%3").arg(startup).arg(reconnect).arg(newLog)))
+                        << startup << reconnect << newLog;
+    }
+    void reconnectAndLogContinuation() {
+        QFETCH(bool, startup); QFETCH(bool, reconnect); QFETCH(bool, newLog);
+        ArtifactDirectory d;
+        auto *fake = new FakeSerial;
+        fake->devices = {{"COM3", "", "ABC", 10, 20}};
+        SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
+        QSignalSpy paths(&worker, &SessionWorker::logFileChanged);
+        Profile p; p.port = "COM3"; p.logging = true; p.autoConnect = startup;
+        p.autoReconnect = reconnect; p.newLogOnReconnect = newLog;
+        worker.configure(p, d.path); worker.resume(); worker.poll();
+        fake->inject("before");
+        fake->devices.clear(); fake->unplug();
+        QCOMPARE(worker.state(), reconnect ? SessionState::Waiting : SessionState::Disconnected);
+        worker.poll();
+        fake->devices = {{"COM8", "", "ABC", 10, 20}};
+        worker.poll();
+        if (reconnect) {
+            QCOMPARE(worker.state(), SessionState::Connected);
+            QCOMPARE(fake->openedNames.last(), QString("COM8"));
+            fake->inject("after");
+        } else QCOMPARE(fake->openCalls, 1);
+        worker.pause();
+        const auto raws = QDir(d.path).entryList({"*.raw"}, QDir::Files);
+        QCOMPARE(raws.size(), reconnect && newLog ? 2 : 1);
+        QCOMPARE(paths.size(), raws.size());
+        for (const auto &path : paths) QVERIFY(QFileInfo::exists(path.first().toString()));
+        QList<QByteArray> content;
+        for (const auto &raw : raws) content << readFile(d.file(raw));
+        if (!reconnect) QCOMPARE(content.first(), QByteArray("before"));
+        else if (!newLog) QCOMPARE(content.first(), QByteArray("beforeafter"));
+        else { QVERIFY(content.contains("before")); QVERIFY(content.contains("after")); }
+    }
+    void displayQueueLimitIsConfigurable() {
+        DisplayBuffer display;
+        display.append(QByteArray(5000, 'x'));
+        display.setLimit(1024);
+        quint64 dropped;
+        QCOMPARE(display.take(dropped).size(), 1024);
+        QCOMPARE(dropped, quint64(3976));
+        display.setLimit(8192); display.append(QByteArray(5000, 'y'));
+        QCOMPARE(display.take(dropped).size(), 5000); QCOMPARE(dropped, quint64(0));
+    }
+    void liveReconnectToggleStopsWaitingWithoutDisconnectingActiveSession() {
+        ArtifactDirectory d;
+        auto *fake = new FakeSerial; fake->devices = {{"COM3", "", "", -1, -1}};
+        SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
+        Profile p; p.port = "COM3";
+        worker.configure(p, d.path); worker.resume(); worker.poll();
+        worker.setAutoReconnect(false);
+        QCOMPARE(worker.state(), SessionState::Connected);
+        QVERIFY(fake->isOpen());
+        worker.setAutoReconnect(true);
+        fake->devices.clear(); fake->unplug();
+        QCOMPARE(worker.state(), SessionState::Waiting);
+        worker.setAutoReconnect(false);
+        QCOMPARE(worker.state(), SessionState::Disconnected);
+        fake->devices = {{"COM3", "", "", -1, -1}};
+        worker.poll(); QCOMPARE(fake->openCalls, 1);
     }
     void shippedExampleMatchesExactDefaults() {
         IniFile ini; QString error;
@@ -176,6 +292,39 @@ private slots:
         echoed.localEcho("TX"); echoed.feed("31mred");
         QCOMPARE(echoed.plainText(), QString("TXred"));
         QVERIFY(echoed.html().contains("#cd5555"));
+    }
+    void filteredTerminalSnapshotsAndAtomicExport() {
+        ArtifactDirectory d;
+        Terminal terminal;
+        terminal.feed("ready\n\x1b[31mERROR first\x1b[0m\ninfo\nerror second\n");
+        const QString original = terminal.plainText();
+        const auto filtered = filterTerminalLines(original, "error", Qt::CaseInsensitive);
+        QCOMPARE(filtered, QString("ERROR first\nerror second"));
+        QCOMPARE(filterTerminalLines(original, "error", Qt::CaseSensitive), QString("error second"));
+        QCOMPARE(filterTerminalLines(original, "", Qt::CaseInsensitive), original);
+        QCOMPARE(filterTerminalLines(original, "not-found", Qt::CaseInsensitive), QString());
+        QCOMPARE(terminal.plainText(), original);
+        QString error;
+        const QString path = d.file("terminal.txt");
+        QVERIFY2(saveTerminalText(path, filtered, error), qPrintable(error));
+        QCOMPARE(readFile(path), filtered.toUtf8());
+        QVERIFY(saveTerminalText(path, QString::fromUtf8("åäö\n"), error));
+        QCOMPARE(readFile(path), QString::fromUtf8("åäö\n").toUtf8());
+        QVERIFY(!saveTerminalText(d.file("missing/file.txt"), original, error));
+        QVERIFY(error.contains("Cannot save terminal export"));
+        QCOMPARE(readFile(path), QString::fromUtf8("åäö\n").toUtf8());
+    }
+    void terminalLimitsPreserveContentUnlessReduced() {
+        Terminal terminal(10, 32);
+        terminal.feed("first\nsecond\nthird\nfourth");
+        const auto text = terminal.plainText();
+        terminal.setLimits(20, 64);
+        QCOMPARE(terminal.plainText(), text);
+        terminal.setLimits(2, 3);
+        QCOMPARE(terminal.plainText(), QString("thi\nfou"));
+        terminal.feed("x");
+        QCOMPARE(terminal.plainText(), QString("fou\nx"));
+        QVERIFY(terminal.rowCount() <= 2); QVERIFY(terminal.longestLine() <= 3);
     }
     void ansiCursorEraseAndBounds() {
         Terminal terminal(3, 8);
@@ -542,6 +691,7 @@ private slots:
         QCOMPARE(logs.size(), 1); QCOMPARE(readFile(d.file(logs[0])), raw);
         quint64 dropped;
         Terminal rendered; rendered.feed(display->take(dropped)); rendered.clear();
+        filterTerminalLines(rendered.plainText(), "anything", Qt::CaseInsensitive);
         QCOMPARE(readFile(d.file(logs[0])), raw);
     }
 };

@@ -8,6 +8,8 @@
 #include <QThread>
 #include <QWaitCondition>
 
+QString logFileStem(const Profile &profile, const QDateTime &started, const QString &id);
+
 class RotatingSink {
 public:
     RotatingSink(const Profile &profile, const QString &base);
@@ -21,7 +23,7 @@ private:
     QString base;
     QFile raw, metadata, text, session;
     Utf8Visible textDecoder;
-    QDateTime sessionStarted;
+    QDateTime sessionStarted, segmentStarted;
     qint64 offset = 0, segment = 0;
     bool ended = false;
     bool open(QString &error);

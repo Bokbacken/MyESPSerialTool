@@ -4,6 +4,33 @@
 #include <QMutexLocker>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+
+QString logFileStem(const Profile &profile, const QDateTime &started, const QString &id) {
+    auto safe = [](QString value) {
+        value.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
+        return value.left(40);
+    };
+    const QMap<QString, QString> fields = {
+        {"profile", safe(profile.name)}, {"date", started.toUTC().toString("yyyyMMdd")},
+        {"time", started.toUTC().toString("HHmmss-zzz")}, {"port", safe(profile.port)},
+        {"serial", safe(profile.usbSerial)}, {"id", id}};
+    QString result;
+    const QRegularExpression token("\\{([a-z]+)\\}");
+    auto matches = token.globalMatch(profile.logName);
+    qsizetype position = 0;
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        result += profile.logName.mid(position, match.capturedStart() - position);
+        result += fields.value(match.captured(1));
+        position = match.capturedEnd();
+    }
+    result += profile.logName.mid(position);
+    if (!profile.logName.contains("{id}")) result += "-" + id;
+    // Keep individual file names below Windows' component limit, including suffixes.
+    if (result.size() > 200) result = result.left(160) + "-" + id;
+    return result;
+}
 
 static QByteArray jsonRecord(const QJsonObject &object) {
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
@@ -107,9 +134,18 @@ bool RotatingSink::rotate(QString &error) {
 }
 bool RotatingSink::append(const QByteArray &bytes, const QDateTime &received, QString &error) {
     if (!begin(received, error) || !open(error)) return false;
+    if (!segmentStarted.isValid()) segmentStarted = received;
+    if (profile.logSeconds > 0 && offset > 0
+        && segmentStarted.msecsTo(received) >= qint64(profile.logSeconds) * 1000) {
+        if (!rotate(error)) return false;
+        segmentStarted = received;
+    }
     qsizetype position = 0;
     while (position < bytes.size()) {
-        if (offset >= profile.logBytes && !rotate(error)) return false;
+        if (offset >= profile.logBytes) {
+            if (!rotate(error)) return false;
+            segmentStarted = received;
+        }
         const qint64 length = qMin<qint64>(bytes.size() - position, profile.logBytes - offset);
         if (raw.write(bytes.constData() + position, length) != length || !raw.flush()) {
             error = "Raw log write failed: " + raw.errorString(); return false;

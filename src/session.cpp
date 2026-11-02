@@ -74,6 +74,14 @@ void DisplayBuffer::append(const QByteArray &bytes) {
     buffer += bytes.left(room);
     dropped += bytes.size() - qMin(bytes.size(), room);
 }
+void DisplayBuffer::setLimit(qsizetype bytes) {
+    QMutexLocker lock(&mutex);
+    limit = bytes;
+    if (buffer.size() > limit) {
+        dropped += buffer.size() - limit;
+        buffer.truncate(limit);
+    }
+}
 QByteArray DisplayBuffer::take(quint64 &droppedBytes) {
     QMutexLocker lock(&mutex);
     QByteArray result; result.swap(buffer);
@@ -122,6 +130,7 @@ void SessionWorker::configure(const Profile &p, const QString &directory) {
     stopping = true; transport->close(); writeTimer->stop();
     stopLog("settings reconfigured");
     stopping = false; settings = checked; logDirectory = directory; attempts = 0;
+    if (display) display->setLimit(settings.displayQueueBytes);
     reconnectAfterLoss = false;
     lastProblem.clear(); transition(SessionState::Disconnected);
 }
@@ -150,20 +159,27 @@ void SessionWorker::setReadOnly(bool readOnly) {
     if (logger) logger->enqueueEvent(readOnly ? "read-only send gate enabled" : "read-only send gate disabled",
                                       QDateTime::currentDateTimeUtc());
 }
+void SessionWorker::setAutoReconnect(bool enabled) {
+    settings.autoReconnect = enabled;
+    if (logger) logger->enqueueEvent(enabled ? "automatic reconnect enabled" : "automatic reconnect disabled",
+                                     QDateTime::currentDateTimeUtc());
+    if (!enabled && reconnectAfterLoss && current == SessionState::Waiting) {
+        stopLog("automatic reconnect disabled while waiting");
+        transition(SessionState::Disconnected);
+    }
+}
 void SessionWorker::stopLog(const QString &reason) {
     if (!logger) return;
     logger->shutdown(reason, QDateTime::currentDateTimeUtc()); delete logger; logger = nullptr;
 }
 void SessionWorker::startLog() {
     if (logger) return;
-    QString safe = settings.name;
-    safe.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
-    const QString base = QDir(logDirectory).filePath(safe + "-"
-        + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz") + "-"
-        + QUuid::createUuid().toString(QUuid::Id128));
+    const QString base = QDir(logDirectory).filePath(logFileStem(settings,
+        QDateTime::currentDateTimeUtc(), QUuid::createUuid().toString(QUuid::Id128)));
     logger = new LogWorker(settings, base, this);
     connect(logger, &LogWorker::fault, this, &SessionWorker::problem);
     logger->start();
+    emit logFileChanged(settings.logging ? base + ".raw" : QString{});
     emit problem("Session metadata: " + base + ".session");
     if (settings.logging) emit problem("Raw capture: " + base + ".raw"
         + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : "")
@@ -189,7 +205,7 @@ void SessionWorker::poll() {
                                   : "Selected device moved to another port");
     }
     if (current != SessionState::Waiting) return;
-    const bool shouldReconnect = settings.autoConnect || reconnectAfterLoss;
+    const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");
@@ -237,9 +253,10 @@ void SessionWorker::lost(const QString &message) {
     if (logger) logger->enqueueEvent("interruption: " + message, QDateTime::currentDateTimeUtc());
     writeTimer->stop(); stopping = true; transport->close(); stopping = false;
     if (current != SessionState::ManuallyPaused && current != SessionState::Loaned) {
-        const bool shouldReconnect = settings.autoConnect || reconnectAfterLoss;
+        const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
         attempts = 0; transition(shouldReconnect ? SessionState::Waiting : SessionState::Disconnected);
         if (!shouldReconnect) stopLog("interrupted; automatic reconnect disabled");
+        else if (settings.newLogOnReconnect) stopLog("interrupted; new log on reconnect");
         if (!pollTimer->isActive()) pollTimer->start();
     }
 }

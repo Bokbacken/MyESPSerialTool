@@ -12,6 +12,9 @@ QMap<QString, QString> Profile::values() const {
     v["port"] = port; v["usbSerial"] = usbSerial; v["parity"] = parity;
     v["stopBits"] = stopBits; v["flowControl"] = flowControl; v["newline"] = newline;
     v["logDirectory"] = logDirectory;
+    v["logName"] = logName;
+    number("logSeconds", logSeconds); number("displayQueueBytes", displayQueueBytes);
+    flag("autoReconnect", autoReconnect); flag("newLogOnReconnect", newLogOnReconnect);
     number("baud", baud); number("dataBits", dataBits); number("vid", vid); number("pid", pid);
     number("writeTimeoutMs", writeTimeoutMs); number("retryLimit", retryLimit);
     number("terminalRows", terminalRows); number("lineColumns", lineColumns);
@@ -61,6 +64,8 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !num("logBytes", 1, 1073741824, p.logBytes)
         || !num("logRetention", 1, 100, p.logRetention)
         || !num("logQueueBytes", 1, 67108864, p.logQueueBytes)
+        || !num("logSeconds", 0, 31536000, p.logSeconds)
+        || !num("displayQueueBytes", 1024, 67108864, p.displayQueueBytes)
         || !choice("parity", {"none", "even", "odd", "space", "mark"}, p.parity)
         || !choice("stopBits", {"1", "1.5", "2"}, p.stopBits)
         || !choice("flowControl", {"none", "hardware", "software"}, p.flowControl)
@@ -71,6 +76,15 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !boolean("logging", p.logging) || !boolean("timestampMetadata", p.timestampMetadata)
         || !boolean("textLog", p.textLog))
         return false;
+    if (!boolean("autoReconnect", p.autoReconnect)
+        || !boolean("newLogOnReconnect", p.newLogOnReconnect)) return false;
+    p.logName = v.value("logName", p.logName);
+    QString literal = p.logName;
+    for (const auto &token : {"{profile}", "{date}", "{time}", "{port}", "{serial}", "{id}"})
+        literal.replace(token, "");
+    if (p.logName.isEmpty() || p.logName.size() > 160
+        || literal.contains(QRegularExpression("[^A-Za-z0-9_-]")))
+        return fail("logName (use letters, digits, _-, and {profile}/{date}/{time}/{port}/{serial}/{id})");
     for (const auto &key : {"port", "usbSerial", "logDirectory"}) {
         const QString s = v.value(key, p.values().value(key));
         if (s.size() > 4096 || s.contains(QRegularExpression("[\\r\\n\\x00]"))

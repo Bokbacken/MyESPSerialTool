@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -19,8 +20,12 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QScrollArea>
+#include <QTabWidget>
 #include <QTextEdit>
+#include <QTextCursor>
 #include <QVBoxLayout>
+#include <QUrl>
 
 bool AppConfig::chooseFile(QWidget *parent) {
     const QString file = QFileDialog::getSaveFileName(parent, "Choose configuration file (no automatic relocation)",
@@ -70,6 +75,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     auto *newProfile = new QPushButton("New profile");
     newProfile->setObjectName("newProfile");
     auto *save = new QPushButton("Save profile");
+    save->setObjectName("saveProfile");
     auto *newWindow = new QPushButton("New window");
     auto *chooseConfig = new QPushButton("Save INI as…");
     profileRow->addWidget(new QLabel("Profile")); profileRow->addWidget(profiles, 1);
@@ -83,7 +89,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
         baud->addItem(QString::number(rate));
     readOnly = new QCheckBox("Read-only");
     readOnly->setObjectName("readOnly");
-    auto *advancedButton = new QPushButton("Advanced…");
+    auto *advancedButton = new QPushButton("Settings…");
     advancedButton->setObjectName("advanced");
     auto *connectButton = new QPushButton("Connect / Resume");
     connectButton->setObjectName("connectButton");
@@ -93,17 +99,33 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     connectionRow->addWidget(readOnly); connectionRow->addWidget(advancedButton);
     connectionRow->addWidget(connectButton); connectionRow->addWidget(pauseButton);
     layout->addLayout(connectionRow);
+    autoReconnect = new QCheckBox("Reconnect automatically after connection loss");
+    autoReconnect->setObjectName("autoReconnect");
+    layout->addWidget(autoReconnect);
     auto *identityRow = new QHBoxLayout;
     identity = new QLabel; identity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     auto *forget = new QPushButton("Forget USB binding");
     forget->setObjectName("forgetBinding");
-    connectionEditors = {profiles, newProfile, port, baud, advancedButton, forget, connectButton};
+    connectionEditors = {profiles, newProfile, port, baud, forget, connectButton};
     identityRow->addWidget(identity, 1); identityRow->addWidget(forget);
     layout->addLayout(identityRow);
     status = new QLabel("Disconnected"); status->setObjectName("sessionState");
     layout->addWidget(status);
     logStatus = new QLabel("Raw logging disabled"); logStatus->setObjectName("logStatus");
     logStatus->setWordWrap(true); layout->addWidget(logStatus);
+    logStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *logTools = new QHBoxLayout;
+    auto *logSettings = new QPushButton("Logging settings…");
+    logSettings->setObjectName("logSettings");
+    auto *openLogs = new QPushButton("Open log folder");
+    logTools->addWidget(logSettings); logTools->addWidget(openLogs); logTools->addStretch();
+    layout->addLayout(logTools);
+    connect(logSettings, &QPushButton::clicked, this, [this] { advanced(1); });
+    connect(openLogs, &QPushButton::clicked, this, [this] {
+        const auto directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(settings.logDirectory);
+        if (!QDir().mkpath(directory) || !QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
+            addEvent("Cannot open log folder: " + directory);
+    });
     view = new QTextEdit; view->setReadOnly(true); view->setObjectName("terminal");
     view->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     view->setLineWrapMode(QTextEdit::NoWrap);
@@ -114,6 +136,32 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     auto *clear = new QPushButton("Clear rendered view (raw logs unchanged)");
     tools->addWidget(follow); tools->addStretch(); tools->addWidget(clear);
     layout->addLayout(tools);
+    auto *exportRow = new QHBoxLayout;
+    terminalFilter = new QLineEdit;
+    terminalFilter->setObjectName("terminalFilter"); terminalFilter->setMaxLength(4096);
+    terminalFilter->setPlaceholderText("Show lines containing text (raw logs are unchanged)");
+    filterCase = new QCheckBox("Match case");
+    filterCase->setObjectName("filterCase");
+    auto *saveBuffer = new QPushButton("Save whole buffer…");
+    saveBuffer->setObjectName("saveBuffer");
+    auto *saveSelection = new QPushButton("Save selection…");
+    saveSelection->setObjectName("saveSelection"); saveSelection->setEnabled(false);
+    auto *saveFiltered = new QPushButton("Save filtered rows…");
+    saveFiltered->setObjectName("saveFiltered"); saveFiltered->setEnabled(false);
+    exportRow->addWidget(terminalFilter, 1); exportRow->addWidget(filterCase);
+    exportRow->addWidget(saveBuffer); exportRow->addWidget(saveSelection); exportRow->addWidget(saveFiltered);
+    layout->addLayout(exportRow);
+    connect(terminalFilter, &QLineEdit::textChanged, this, [this, saveFiltered] {
+        auto cursor = view->textCursor(); cursor.clearSelection(); view->setTextCursor(cursor);
+        saveFiltered->setEnabled(!terminalFilter->text().isEmpty()); renderView();
+    });
+    connect(filterCase, &QCheckBox::toggled, this, [this] { renderView(); });
+    connect(view, &QTextEdit::selectionChanged, this, [this, saveSelection] {
+        saveSelection->setEnabled(view->textCursor().hasSelection());
+    });
+    connect(saveBuffer, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Buffer); });
+    connect(saveSelection, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Selection); });
+    connect(saveFiltered, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Filtered); });
     auto *sendRow = new QHBoxLayout;
     sendText = new QComboBox; sendText->setEditable(true); sendText->setObjectName("sendText");
     sendText->setInsertPolicy(QComboBox::NoInsert);
@@ -138,6 +186,9 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     connect(&thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(worker, &SessionWorker::stateChanged, this, &SessionWindow::applyState);
     connect(worker, &SessionWorker::problem, this, &SessionWindow::addEvent);
+    connect(worker, &SessionWorker::logFileChanged, this, [this](const QString &path) {
+        logPath = path; updateLogStatus();
+    });
     connect(worker, &SessionWorker::portsAvailable, this, [this](const QStringList &ports) {
         availablePorts = ports; refreshPorts();
     });
@@ -150,7 +201,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
         if (echo->isChecked()) {
             render();
             const int scroll = view->verticalScrollBar()->value();
-            terminal->localEcho(bytes); view->setHtml(terminal->html());
+            terminal->localEcho(bytes); renderView();
             view->verticalScrollBar()->setValue(follow->isChecked() ? view->verticalScrollBar()->maximum() : scroll);
         }
     });
@@ -185,7 +236,14 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
         if (collect()) (new SessionWindow(config, settings))->show();
     });
     connect(chooseConfig, &QPushButton::clicked, this, [this] { config->chooseFile(this); });
-    connect(advancedButton, &QPushButton::clicked, this, &SessionWindow::advanced);
+    connect(advancedButton, &QPushButton::clicked, this, [this] { advanced(); });
+    connect(autoReconnect, &QCheckBox::toggled, this, [this](bool enabled) {
+        settings.autoReconnect = enabled;
+        QMetaObject::invokeMethod(worker, [worker = worker, enabled] { worker->setAutoReconnect(enabled); },
+                                  Qt::QueuedConnection);
+        addEvent(enabled ? "Automatic reconnect enabled. Save profile to persist."
+                         : "Automatic reconnect disabled. Save profile to persist.");
+    });
     connect(connectButton, &QPushButton::clicked, this, &SessionWindow::connectSession);
     connect(pauseButton, &QPushButton::clicked, this, [this] {
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
@@ -217,6 +275,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
 }
 void SessionWindow::applyState(SessionState s) {
     state = s; status->setText(stateName(s));
+    updateLogStatus();
     const bool active = s == SessionState::Waiting || s == SessionState::Connecting
         || s == SessionState::Connected || s == SessionState::Loaned;
     for (QWidget *editor : connectionEditors) {
@@ -225,7 +284,7 @@ void SessionWindow::applyState(SessionState s) {
     }
     sendButton->setEnabled(s == SessionState::Connected && !settings.readOnly);
     if (s != SessionState::Connected && s != SessionState::Connecting) {
-        render(); terminal->finish(); view->setHtml(terminal->html());
+        render(); terminal->finish(); renderView();
     }
 }
 SessionWindow::~SessionWindow() {
@@ -245,6 +304,8 @@ void SessionWindow::loadProfile(const Profile &p) {
     profiles->setCurrentText(p.name);
     port->setCurrentText(p.port); baud->setCurrentText(QString::number(p.baud));
     readOnly->blockSignals(true); readOnly->setChecked(p.readOnly); readOnly->blockSignals(false);
+    autoReconnect->blockSignals(true); autoReconnect->setChecked(p.autoReconnect); autoReconnect->blockSignals(false);
+    logPath.clear(); logFault.clear(); updateLogStatus();
     echo->setChecked(p.localEcho); follow->setChecked(p.follow); newline->setCurrentText(p.newline);
     terminal = std::make_unique<Terminal>(p.terminalRows, p.lineColumns);
     quint64 dropped; display->take(dropped); view->clear(); sendText->clear(); sendButton->setEnabled(false);
@@ -273,30 +334,50 @@ void SessionWindow::refreshPorts() {
     port->addItems(availablePorts);
     port->setCurrentText(selected); port->blockSignals(false);
 }
-void SessionWindow::advanced() {
+void SessionWindow::advanced(int tab) {
     if (!collect()) return;
-    QDialog dialog(this); dialog.setWindowTitle("Advanced profile settings (apply on Connect)");
+    QDialog dialog(this); dialog.setWindowTitle("Profile settings");
+    dialog.resize(780, 600);
     auto *layout = new QVBoxLayout(&dialog);
-    auto *form = new QFormLayout;
+    auto *notice = new QLabel("OK applies settings and pauses this session. Connect / Resume to restart; Save profile to persist.");
+    notice->setWordWrap(true); layout->addWidget(notice);
+    auto *tabs = new QTabWidget;
+    QList<QFormLayout *> forms;
+    for (const auto &name : {"Connection", "Logging", "Terminal"}) {
+        auto *page = new QWidget;
+        forms << new QFormLayout(page);
+        forms.last()->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        forms.last()->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        auto *scroll = new QScrollArea;
+        scroll->setWidgetResizable(true); scroll->setWidget(page);
+        tabs->addTab(scroll, name);
+    }
+    tabs->setCurrentIndex(tab); layout->addWidget(tabs);
     QMap<QString, QWidget *> editors;
     auto values = settings.values();
     const QMap<QString, QStringList> options = {
         {"dataBits", {"5", "6", "7", "8"}}, {"parity", {"none", "even", "odd", "space", "mark"}},
         {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}}};
-    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog"};
+    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog",
+                               "autoReconnect", "newLogOnReconnect"};
     const QList<QPair<QString, QString>> fields = {
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
         {"autoConnect", "Connect on window open and retry failed initial opens (explicit opt-in)"},
+        {"autoReconnect", "Reconnect this session after connection loss"},
         {"flowControl", "Flow control"},         {"dtr", "DTR (applied on open, independent of read-only)"},
         {"rts", "RTS (applied on open unless hardware flow manages it)"},
         {"writeTimeoutMs", "Write completion timeout (100–60000 ms)"},
         {"retryLimit", "Open retries per outage (1–100, at 1 Hz)"},
         {"terminalRows", "Maximum terminal rows (10–10000)"},
         {"lineColumns", "Wrap at columns (32–16384; total cells capped at 1 Mi)"},
+        {"displayQueueBytes", "Display receive queue (1024–67108864 bytes; separate from disk log)"},
         {"logging", "Exact raw receive logging (session metadata is always recorded)"},
         {"logDirectory", "Log directory (relative to INI)"},
+        {"logName", "Filename template (without extension)"},
         {"logBytes", "Raw segment size (1–1073741824 bytes)"},
-        {"logRetention", "Completed segments retained (1–100)"},
+        {"logSeconds", "Rotate after seconds (0 = size only; max 31536000)"},
+        {"logRetention", "Rolling buffer: completed segments kept (1–100), plus active"},
+        {"newLogOnReconnect", "New log set on reconnect (off = append to current log)"},
         {"logQueueBytes", "Disk queue byte limit (1–67108864)"},
         {"timestampMetadata", "Separate reception UTC raw-offset metadata (not device time)"},
         {"textLog", "Optional readable timestamped UTF-8 .text (with raw logging)"}};
@@ -308,13 +389,32 @@ void SessionWindow::advanced() {
         } else if (flags.contains(field.first)) {
             auto *box = new QCheckBox; box->setChecked(values[field.first] == "true"); editor = box;
         } else editor = new QLineEdit(values[field.first]);
-        editors[field.first] = editor; form->addRow(field.second, editor);
+        editor->setObjectName(field.first);
+        int group = 0;
+        if (field.first.startsWith("log") || field.first == "newLogOnReconnect"
+            || field.first == "timestampMetadata" || field.first == "textLog") group = 1;
+        if (field.first == "terminalRows" || field.first == "lineColumns"
+            || field.first == "displayQueueBytes") group = 2;
+        editors[field.first] = editor; forms[group]->addRow(field.second, editor);
     }
+    auto *namingHelp = new QLabel("Fields: {date}, {time} (UTC), {profile}, {port}, {serial}, {id}.\n"
+        "Example: {profile}-{date}-{time}. A unique ID is always included to avoid overwriting.\n"
+        "Rotation uses .raw.1, .raw.2, etc.; oldest segments of this log set are deleted.\n"
+        "Size/time limits: whichever comes first. Time rotation happens on the next received bytes.\n"
+        "Other log sets are never deleted automatically. Traffic logging captures received bytes only.");
+    namingHelp->setWordWrap(true); forms[1]->addRow(namingHelp);
+    auto *browse = new QPushButton("Choose log folder…");
+    forms[1]->addRow(browse);
+    connect(browse, &QPushButton::clicked, &dialog, [&] {
+        auto *directory = qobject_cast<QLineEdit *>(editors["logDirectory"]);
+        const QString selected = QFileDialog::getExistingDirectory(&dialog, "Log folder",
+            QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(directory->text()));
+        if (!selected.isEmpty()) directory->setText(selected);
+    });
     auto *flow = qobject_cast<QComboBox *>(editors["flowControl"]);
     auto *rts = qobject_cast<QCheckBox *>(editors["rts"]);
     auto updateRts = [flow, rts] { rts->setEnabled(flow->currentText() != "hardware"); };
     connect(flow, &QComboBox::currentTextChanged, &dialog, updateRts); updateRts();
-    layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -330,8 +430,10 @@ void SessionWindow::advanced() {
         }
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
         render(); terminal->finish();
-        settings = checked; terminal = std::make_unique<Terminal>(settings.terminalRows, settings.lineColumns);
-        view->clear(); addEvent("Advanced settings updated; paused. Connect to apply, Save profile to persist.");
+        settings = checked; terminal->setLimits(settings.terminalRows, settings.lineColumns);
+        autoReconnect->blockSignals(true); autoReconnect->setChecked(settings.autoReconnect); autoReconnect->blockSignals(false);
+        logPath.clear(); logFault.clear(); updateLogStatus();
+        renderView(); addEvent("Settings updated; paused. Connect to apply, Save profile to persist.");
         dialog.accept();
     });
     dialog.exec();
@@ -345,7 +447,7 @@ void SessionWindow::connectSession() {
     applyState(SessionState::Waiting);
     terminal->finish();
     const Profile p = settings;
-    if (!p.logging) { logStatus->setStyleSheet(""); logStatus->setText("Raw logging disabled"); }
+    logPath.clear(); logFault.clear(); updateLogStatus();
     const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(p.logDirectory);
     QMetaObject::invokeMethod(worker, [worker = worker, p, directory] {
         worker->configure(p, directory); worker->resume();
@@ -383,19 +485,65 @@ void SessionWindow::render() {
         terminal->feed(QString("\n[render queue dropped %1 bytes; raw logging is independent]\n").arg(dropped).toUtf8());
         addEvent(QString("Display overload: %1 bytes omitted from rendered view. Check raw log fault status.").arg(dropped));
     }
-    view->setHtml(terminal->html());
+    renderView();
     view->verticalScrollBar()->setValue(follow->isChecked() ? view->verticalScrollBar()->maximum() : scroll);
+}
+void SessionWindow::renderView() {
+    const auto cursor = view->textCursor();
+    const int scroll = view->verticalScrollBar()->value();
+    if (terminalFilter->text().isEmpty()) view->setHtml(terminal->html());
+    else view->setPlainText(filterTerminalLines(terminal->plainText(), terminalFilter->text(),
+                           filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive));
+    if (cursor.hasSelection()) {
+        auto restored = view->textCursor();
+        const int end = view->document()->characterCount() - 1;
+        restored.setPosition(qMin(cursor.anchor(), end));
+        restored.setPosition(qMin(cursor.position(), end), QTextCursor::KeepAnchor);
+        view->setTextCursor(restored);
+    }
+    view->verticalScrollBar()->setValue(follow->isChecked() ? view->verticalScrollBar()->maximum() : scroll);
+}
+void SessionWindow::exportTerminal(ExportMode mode) {
+    QString text;
+    if (mode == ExportMode::Selection) {
+        if (!view->textCursor().hasSelection()) { addEvent("Select terminal text before exporting."); return; }
+        text = view->textCursor().selectedText().replace(QChar(0x2029), '\n').replace(QChar(0x2028), '\n');
+    } else {
+        render();
+        text = terminal->plainText();
+        if (mode == ExportMode::Filtered) text = filterTerminalLines(text, terminalFilter->text(),
+                                filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+    }
+    const QString path = QFileDialog::getSaveFileName(this, "Save terminal text (UTF-8 snapshot)",
+        QDir(QFileInfo(config->ini.path).absolutePath()).filePath("terminal-"
+            + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz") + ".txt"),
+        "Text files (*.txt);;All files (*)");
+    if (path.isEmpty()) return;
+    QString error;
+    if (!saveTerminalText(path, text, error)) {
+        addEvent(error); QMessageBox::warning(this, "Export failed", error); return;
+    }
+    addEvent("Terminal snapshot saved: " + path);
 }
 void SessionWindow::addEvent(const QString &message) {
     if (message.startsWith("LOGGING STOPPED")) {
-        logStatus->setText(message);
-        logStatus->setStyleSheet("QLabel { color:#d03030; font-weight:bold; }");
-    } else if (message.startsWith("Raw capture:")) {
-        logStatus->setText("Exact raw receive logging enabled; capture path shown below. Metadata uses reception time.");
-        logStatus->setStyleSheet("");
-    } else if (message.startsWith("Session metadata:")) {
-        logStatus->setText("Session metadata recording enabled; path shown below.");
-        logStatus->setStyleSheet("");
+        logFault = message;
     }
+    updateLogStatus();
     events->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") + " " + message);
+}
+void SessionWindow::updateLogStatus() {
+    logStatus->setStyleSheet(logFault.isEmpty() ? "" : "QLabel { color:#d03030; font-weight:bold; }");
+    if (!logFault.isEmpty()) { logStatus->setText(logFault); return; }
+    const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(settings.logDirectory);
+    if (!settings.logging) {
+        logStatus->setText("Traffic logging OFF. Enable it in Logging settings. Session metadata only.\nFolder: " + directory);
+    } else {
+        const bool recording = state == SessionState::Connected && !logPath.isEmpty();
+        logStatus->setText(QString("Traffic logging %1 (received bytes). %2\n%3")
+            .arg(recording ? "ON" : "enabled, not currently recording",
+                 logPath.isEmpty() ? "Folder: " + directory : "File: " + logPath,
+                 QString("Template: %1 | segment: %2 bytes / %3 s (0 = off) | keep %4 completed + active")
+                    .arg(settings.logName).arg(settings.logBytes).arg(settings.logSeconds).arg(settings.logRetention)));
+    }
 }

@@ -54,11 +54,12 @@ class DisplayBuffer {
 public:
     void append(const QByteArray &bytes);
     QByteArray take(quint64 &droppedBytes);
+    void setLimit(qsizetype bytes);
 private:
     QMutex mutex;
     QByteArray buffer;
     quint64 dropped = 0;
-    static constexpr qsizetype limit = 262144;
+    qsizetype limit = 262144;
 };
 
 class SessionWorker : public QObject {
@@ -75,6 +76,7 @@ public slots:
     void resume();
     void pause();
     void setReadOnly(bool readOnly);
+    void setAutoReconnect(bool enabled);
     void send(const QByteArray &bytes);
     void poll();
     void shutdown();
@@ -83,6 +85,7 @@ signals:
     void stateChanged(SessionState state);
     void problem(const QString &message);
     void identityBound(const Profile &profile);
+    void logFileChanged(const QString &rawPath);
     void sent(const QByteArray &bytes);
 private:
     SerialTransport *transport;
