@@ -1,0 +1,133 @@
+Serial ESP Helper — leveransplan, version 0.21.0
+================================================
+
+AVGRÄNSNING
+Detta repo började med enbart README och innehåller ingen ESP32-firmware,
+äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
+komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
+Version 0.21.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+annat projekt.
+
+SÅ HÅLLER VI BACKLOGGEN AKTUELL
+- Lägg nya idéer under rätt etapp eller i "Övriga förbättringsidéer".
+- Skriv kort vad användaren vill kunna göra och hur resultatet kan verifieras.
+- Märk tydligt om arbetet hör till detta serialverktyg eller ett annat repo.
+- Flytta inte en punkt till implementerad förrän funktionen finns och är testad.
+- Lägg nya hårdvaruberoende acceptanstester i matrisen nedan.
+
+ÖVRIGA FÖRBÄTTRINGSIDÉER
+- [ ] Verifiera fysisk ESP32-urkoppling/återanslutning och ändrat COM-nummer
+      med USB-identitet på Windows; komplettera med resultat och adaptermodell.
+- [ ] Samla användarfeedback från verklig terminalanvändning och fyll på
+      backloggen med konkreta, verifierbara förbättringar.
+
+ETAPP 1 — implementeras i denna leverans
+- Qt Widgets/CMake, dynamisk Qt-distribution, Windows x64-portabel ZIP.
+- Läsbar versionsmärkt INI, profiler, flera samtidiga sessionsfönster.
+- Redigerbara portar/baudrate; avancerade serialinställningar och read-only.
+- Portövervakning, stabil USB-identitet när tillgänglig, manuell paus.
+- Inkrementell UTF-8/grundläggande ANSI, sändning, historik, lokal echo.
+- Begränsad terminalvy, frikopplad mottagning/diskloggning.
+- Exakta råbytes, separat metadata/textlogg, rotation och synliga loggfel.
+- Abstraherad serialtransport och automatiserade tester.
+- GitHub Actions-artefakter och separat explicit release med checksummor.
+
+IMPLEMENTERADE FÖRBÄTTRINGAR
+[x] Synlig, profilsparad återanslutning per session, skild från autostart.
+[x] Inställningsflikar för anslutning, loggning och terminal; tillgängliga under anslutning.
+[x] Tydlig trafikloggstatus/sökväg, mappval och öppna loggmapp.
+[x] Filnamnsmall med UTC-datum/tid, profil, port, serienummer och unikt ID.
+[x] Råsegmentrotation på storlek/tid och rullande lagring per loggserie.
+[x] Val mellan ny loggserie och fortsatt logg vid automatisk återanslutning.
+[x] Inställningar för terminalrader, kolumner och separat mottagningskö.
+[x] Export av hela terminalbufferten, markering eller textsökningens träffrader.
+    Enkel textsökning är klar; avancerad filterparser nedan återstår.
+
+VERIFIERING FÖRE PUBLICERAD PRODUKTSTATUS
+Automatiskt: CMake/QtTest, fake-transport, Windows-build och deployment-smoke.
+Kvarvarande verkliga tester (ej påstått utförda):
+[ ] Windows 10 och 11 x64, ren standardanvändare utan Python/.NET/Qt/VC-install.
+[ ] Packa upp ZIP i sökväg med blanksteg/icke-ASCII; kontrollera alla DLL:er.
+[ ] Två riktiga serialenheter samtidigt, hög trafik utan sammanblandning.
+[ ] Fragmenterad UTF-8, binärdata, partiella rader, ANSI från riktig ESP.
+[ ] Koppla bort/åter USB, omstart av ESP, ändrat COM-nummer.
+[ ] Verifiera av/på för återanslutning, fortsatt/ny loggserie och filrotation
+    med verklig trafik; andra loggserier ska aldrig raderas av retention.
+[ ] Kontrollera flikar och exportdialog på liten Windows-skärm/hög DPI.
+[ ] Manuell paus hindrar återanslutning; återuppta fungerar.
+[ ] Saknat/duplicerat USB-serienummer och upptagen/åtkomstnekad port.
+[ ] DTR/RTS på S3-kort: ingen oavsiktlig resetpuls vid read-only/paus.
+    OS/USB-drivrutiner kan själva påverka linjer när en port öppnas.
+[ ] Verklig full disk, borttagen loggdisk, retention och tydlig förlustindikering.
+[ ] Långvarig belastning: minne/GUI-respons/loggkö och råbytejämförelse.
+[ ] Skrivskyddad INI-katalog, atomisk ersättning/backup och antivirus-lås.
+[ ] Verifiera arkivets licenser och motsvarande Qt-källor före distribution.
+
+ETAPP 2 — avancerade filter och export (delvis implementerad)
+- Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader är klara.
+  Nedan gäller utökad filtrering/export.
+- Riktig parser: ! före && före ||; parenteser, citerade strängar,
+  escape-regler för citattecken/backslash och syntaxfel med position.
+- Exempel: ("ord1" && "ord2") || ("ord3" && !"ord4").
+- Aldrig eval/shellutvärdering. Skiftlägesval, sparbara filter.
+- Visa endast träffar eller markera träffar; behåll originallogg opåverkad.
+- Träffräknare/tidsintervall, export av markerat tidsintervall/filtrerad vy.
+- Tester som bevisar att filtrering aldrig ändrar råloggens bytes.
+
+ETAPP 3 — esptool-portöverlämning/chipinfo/rådump (ej implementerad)
+- Officiell separat esptool.exe, konfigurerad sökväg och versionskontroll.
+- QProcess med argumentlista; aldrig användardata i shellkommando.
+- Exklusiv portöverlämning och återställd anslutningsavsikt även vid
+  verktygsfel/avbrytning; respektera manuell paus.
+- Progress, full stdout/stderr, exitstatus.
+- Chipmodell/revision, flashstorlek/partitioner, rådump/kraschdump till fil.
+- Rådump får aldrig radera/skriva flash. Testa fel och avbrytning.
+
+ETAPP 4 — verifierad flashprogrammering (ej implementerad)
+- App, bootloader och merged image via verifierat manifest/flasher_args.json/
+  partitionstabell eller uttryckligt användarval, aldrig filnamnsgissningar.
+- Kontrollera chip, storlekar, överlapp och flashadresser.
+- Visa exakt radering/skrivning; kräv bekräftelse.
+- Avbryt vid secure boot/flash encryption utan uttryckligt stöd.
+- Seriell partitionsskrivning är inte verklig OTA; håll begreppen åtskilda.
+
+ETAPP 5 — Raspberry Pi/avancerad diagnostik (ej implementerad)
+- Separat Linux ARM64-paket; välj och dokumentera OS/version, Qt/runtime,
+  displayserver och serialportbehörigheter innan det kallas portabelt.
+- ESP-stackavkodning med exakt matchande ELF.
+- Separat kodsignering och Windows SmartScreen-information.
+
+ÖVERFÖRINGSUNDERLAG TILL FIRMWARE-REPO (inte del av terminal-etapp 1)
+Äventyr:
+- Klick på dörr/objekt ska använda samma passage-/nyckel-/actionlogik
+  som styrplattan; figuren vänder sig mot objektet.
+- Dubbelklick byter action; annan nödvändig utrustning hanteras likadant.
+- Skridskor: kunna stanna/gå på is; färgade puttbara Sokoban-lådor/plattor.
+- Gemensam AND-grupp för spak och platta (spak på OCH sten på platta).
+- Giftig terräng i 2–3 nivåer.
+- HTML-baneditor hostad i ESP32 flash/kodutrymme eller SD vid stor storlek,
+  alla funktioner, testparsning/varningar, läsning/skrivning till SD.
+- Utred frekvent korrupt internflash på S3 med reproduktion/logg/partitioner
+  innan någon migrering eller påstådd fix.
+
+Karaoke fas D:
+- 480 -> 800 px; utnyttja bredd men behåll tillräcklig spelarhöjd.
+- Bedöm en enda undre knapprad på både nuvarande och bred layout.
+- Ljudbank väljs på låtsidan, tas bort på uppspelaren.
+- Tempo/ton, Melodi på och Spår i hamburgermeny.
+- Tidigare önskad versionshöjning 0.19.3 hör till firmwareprojektet.
+
+Hårdvarudefinition/strömspar — föreslaget separat agentunderlag:
+- Inspektera firmwarets faktiska targets och minnes-/pin-/periferiberoenden.
+- En deklarativ definition per hårdvara, gemensam validering och
+  capability-baserad kod; undvik spridda #ifdef för varje nytt kort.
+- Kombinera automatiska hårda minnesgränser med uttryckliga per-feature-val
+  och rekommendationer; stäng aldrig funktioner tyst på runtime.
+- Karaokeuppspelning håller vaken; inaktivitet räknas från låtens slut
+  eller senaste touch. Pågående spel dubblar inaktivitetstiden.
+- Utred dimning, paus, Wi-Fi modem/light sleep och deep sleep stegvis.
+- Verifiera I2C-touch IRQ/wakeup-pin och faktisk väckningstid/Wi-Fi reconnect.
+- Skilj ESP32-S3 native Wi-Fi från C6-hostad topologi; verifiera vilka
+  802.11 power-save-lägen och firmware/API-versioner som faktiskt stöds.
+- Mät ström före/efter och dokumentera hårdvarutester; anta inte att
+  I2C-bussen eller touchkontrollern fungerar oförändrat i deep sleep.

@@ -1,0 +1,165 @@
+name: Windows portable build
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'example.ini'
+      - '.github/workflows/build.yaml'
+  push:
+    branches: [main, master]
+    tags: ['v*']
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'example.ini'
+      - '.github/workflows/build.yaml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing v* tag to build and release (blank = artifact only)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout requested revision without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Validate manual release tag
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'Release tag must have the form v0.21.0.'
+          }
+          git show-ref --verify "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE) { throw 'The release tag must already exist.' }
+
+      - name: Install dynamically linked Qt and corresponding sources
+        uses: jurplel/install-qt-action@d325aaf2a8baeeda41ad0b5d39f84a6af9bcf005 # v4.3.0
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: qtserialport
+          source: true
+          src-archives: qtbase qtserialport
+
+      - name: Configure, build and test
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" -DBUILD_TESTING=ON
+          if ($LASTEXITCODE) { throw 'Configure failed.' }
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE) { throw 'Build failed.' }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE) { throw 'Tests failed.' }
+          Remove-Item Env:QT_QPA_PLATFORM
+          cmake --install build --config Release --prefix package
+          if ($LASTEXITCODE) { throw 'Install failed.' }
+
+      - name: Deploy Qt and app-local Microsoft runtime
+        run: |
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --no-svg --no-compiler-runtime package/SerialESPHelper.exe
+          if ($LASTEXITCODE) { throw 'Qt deployment failed.' }
+          # App-local CRT: the terminal must not require running vc_redist.
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual C++ installation not found.' }
+          $crt = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT" -Directory |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$crt) { throw 'Redistributable CRT DLLs not found.' }
+          Copy-Item "$($crt.FullName)/*.dll" package/
+          foreach ($file in @('Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6SerialPort.dll','vcruntime140.dll','msvcp140.dll','platforms/qwindows.dll')) {
+            if (!(Test-Path "package/$file")) { throw "Missing runtime: $file" }
+          }
+          New-Item package/licenses -ItemType Directory -Force | Out-Null
+          Invoke-WebRequest 'https://visualstudio.microsoft.com/license-terms/vs2022-cruntime/' -OutFile package/licenses/Microsoft-Visual-Cpp-Runtime.html
+
+      - name: Include licenses, notices and exact Qt source
+        run: |
+          Copy-Item README.md,LICENSE,NOTICE.txt package/
+          $src = Join-Path (Split-Path $env:QT_ROOT_DIR) 'Src'
+          if (!(Test-Path "$src/qtbase/LICENSES/LGPL-3.0-only.txt") -or !(Test-Path "$src/qtserialport")) {
+            throw 'Corresponding Qt sources/licenses missing; refusing incomplete distribution.'
+          }
+          New-Item package/licenses -ItemType Directory -Force | Out-Null
+          foreach ($module in @('qtbase','qtserialport')) {
+            Copy-Item "$src/$module/LICENSES" "package/licenses/$module" -Recurse
+          }
+          # Sources include third-party copyright notices, licenses and build files.
+          New-Item package/sources -ItemType Directory -Force | Out-Null
+          tar -czf package/sources/qt-6.8.3-sources.tar.gz -C $src qtbase qtserialport
+          if ($LASTEXITCODE) { throw 'Qt source packaging failed.' }
+
+      - name: Smoke test deployed program without development Qt on PATH
+        run: |
+          $env:PATH = "$env:SystemRoot/system32;$env:SystemRoot"
+          Remove-Item Env:QT_PLUGIN_PATH,Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = ''
+          $app = Start-Process -FilePath "$pwd/package/SerialESPHelper.exe" -ArgumentList '--smoke-test' -PassThru
+          if (!$app.WaitForExit(15000)) { $app.Kill(); throw 'Packaged GUI did not exit.' }
+          if ($app.ExitCode -ne 0) { throw "Packaged GUI failed: $($app.ExitCode)" }
+
+      - name: Create portable ZIP and SHA-256 checksum
+        run: |
+          Compress-Archive -Path package/* -DestinationPath SerialESPHelper-windows-x64.zip
+          $hash = (Get-FileHash SerialESPHelper-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  SerialESPHelper-windows-x64.zip" | Set-Content SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload portable deliverable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: SerialESPHelper-windows-x64
+          path: |
+            SerialESPHelper-windows-x64.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    # Only trusted tag/manual builds; this job never executes checked-out code.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Publish explicitly requested release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag'; exit 1; }
+          gh run download "$RUN_ID" --name SerialESPHelper-windows-x64 --dir assets
+          (cd assets && sha256sum -c SHA256SUMS.txt)
+          gh release create "$RELEASE_TAG" assets/SerialESPHelper-windows-x64.zip assets/SHA256SUMS.txt \
+            --verify-tag --title "Serial ESP Helper $RELEASE_TAG" \
+            --notes 'Portable unsigned Windows x64 build. See the bundled guide for remaining hardware acceptance tests.'
