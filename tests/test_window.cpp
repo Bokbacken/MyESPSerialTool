@@ -31,6 +31,14 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        QCoreApplication::setApplicationVersion("0.22.0");
+    }
+    void windowTitleIdentifiesRunningVersion() {
+        AppConfig config; config.ini.path = "unused-smoke-config.ini";
+        config.ini.profiles = {Profile{}};
+        SessionWindow window(&config, config.ini.profiles.first());
+        QVERIFY(window.windowTitle().contains("0.22.0"));
+        QVERIFY(window.windowTitle().endsWith("ESP"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";

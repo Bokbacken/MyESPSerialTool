@@ -1,4 +1,5 @@
 #include "window.h"
+#include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
@@ -358,7 +359,7 @@ void SessionWindow::loadProfile(const Profile &p) {
     identity->setText(p.usbSerial.isEmpty() ? "No stable USB binding; only the explicit selected port is used."
         : QString("Bound USB: %1 VID=%2 PID=%3 (port field cannot override this binding)")
             .arg(p.usbSerial).arg(p.vid).arg(p.pid));
-    setWindowTitle("Serial ESP Helper — " + p.name);
+    setWindowTitle("Serial ESP Helper " + QCoreApplication::applicationVersion() + " — " + p.name);
 }
 bool SessionWindow::collect() {
     auto values = settings.values();
