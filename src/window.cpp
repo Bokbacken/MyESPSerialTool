@@ -1,4 +1,5 @@
 #include "window.h"
+#include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
@@ -24,6 +25,7 @@
 #include <QTabWidget>
 #include <QTextEdit>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QVBoxLayout>
 #include <QUrl>
 
@@ -62,9 +64,9 @@ bool AppConfig::saveProfile(const Profile &profile, QWidget *parent) {
     emit profilesChanged(); return true;
 }
 
-SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
+SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *transport)
     : config(c), settings(p), display(std::make_shared<DisplayBuffer>()),
-      worker(new SessionWorker(display)) {
+      worker(new SessionWorker(display, transport)) {
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1050, 760);
     auto *central = new QWidget(this);
@@ -142,20 +144,57 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     terminalFilter->setPlaceholderText("Show lines containing text (raw logs are unchanged)");
     filterCase = new QCheckBox("Match case");
     filterCase->setObjectName("filterCase");
+    filterMode = new QComboBox;
+    filterMode->setObjectName("filterMode"); filterMode->addItems({"Text", "Expression"});
+    filterHighlight = new QCheckBox("Highlight matches");
+    filterHighlight->setObjectName("filterHighlight");
+    auto *filterHelp = new QPushButton("Filter help");
     auto *saveBuffer = new QPushButton("Save whole buffer…");
     saveBuffer->setObjectName("saveBuffer");
     auto *saveSelection = new QPushButton("Save selection…");
     saveSelection->setObjectName("saveSelection"); saveSelection->setEnabled(false);
-    auto *saveFiltered = new QPushButton("Save filtered rows…");
+    saveFiltered = new QPushButton("Save filtered rows…");
     saveFiltered->setObjectName("saveFiltered"); saveFiltered->setEnabled(false);
-    exportRow->addWidget(terminalFilter, 1); exportRow->addWidget(filterCase);
+    auto *filterRow = new QHBoxLayout;
+    filterRow->addWidget(filterMode); filterRow->addWidget(terminalFilter, 1);
+    filterRow->addWidget(filterCase); filterRow->addWidget(filterHighlight); filterRow->addWidget(filterHelp);
+    layout->addLayout(filterRow);
+    filterStatus = new QLabel;
+    filterStatus->setObjectName("filterStatus"); filterStatus->setWordWrap(true);
+    layout->addWidget(filterStatus);
+    exportRow->addStretch();
     exportRow->addWidget(saveBuffer); exportRow->addWidget(saveSelection); exportRow->addWidget(saveFiltered);
     layout->addLayout(exportRow);
-    connect(terminalFilter, &QLineEdit::textChanged, this, [this, saveFiltered] {
-        auto cursor = view->textCursor(); cursor.clearSelection(); view->setTextCursor(cursor);
-        saveFiltered->setEnabled(!terminalFilter->text().isEmpty()); renderView();
+    connect(terminalFilter, &QLineEdit::textChanged, this, [this] { updateFilter(); });
+    connect(filterCase, &QCheckBox::toggled, this, [this] { updateFilter(); });
+    connect(filterMode, &QComboBox::currentIndexChanged, this, [this] { updateFilter(); });
+    connect(filterHighlight, &QCheckBox::toggled, this, [this] { updateFilter(); });
+    connect(filterHelp, &QPushButton::clicked, this, [this] {
+        QMessageBox help(this);
+        help.setWindowTitle("Line filters");
+        help.setTextFormat(Qt::PlainText);
+        help.setTextInteractionFlags(Qt::TextSelectableByMouse);
+        help.setText("Text mode: literal substring search.\n"
+            "Expression mode: quoted search terms, ! (NOT), && (AND), || (OR), parentheses.\n"
+            "Precedence: ! then && then ||.\n"
+            "Example: (\"error*flash\" || \"warn??\") && !\"ignored\"\n"
+            "? = one Unicode character; * = zero or more characters, on the same line.\n"
+            "Escapes inside quotes: \\? \\* \\\" \\\\ (literal ?, *, quote, backslash).\n\n"
+            "Numeric fields: temp >= 20 && temp < 30 matches temp=23.5 or temp: 23.5.\n"
+            "Position: number(2) >= -1.5e2 selects the second standalone number (1-based).\n"
+            "Comparisons: < <= == != >= >. Decimal point, optional sign/exponent.\n"
+            "Missing/invalid numbers never satisfy comparisons (including !=).\n"
+            "For a repeated field name, the first valid numeric assignment is used.\n"
+            "Numbers must be standalone; 32 in ESP32 and 23 in 23C are not numbers.\n"
+            "Combine text/numeric tests: \"sensor*\" && voltage >= 3.1.\n\n"
+            "Match case applies to text and field names. Empty filter matches all.\n"
+            "Save profile stores this filter. Invalid syntax disables filtered export.\n"
+            "Highlight keeps all rows visible; filtered export still saves only matches.\n"
+            "Filters/export use the retained terminal buffer, never change the raw log.\n"
+            "Saved filters follow INI rules: no leading/trailing whitespace or whitespace before ;/#.\n"
+            "Expressions: up to 4096 characters, 128 terms/operators, 32 nesting levels.");
+        help.exec();
     });
-    connect(filterCase, &QCheckBox::toggled, this, [this] { renderView(); });
     connect(view, &QTextEdit::selectionChanged, this, [this, saveSelection] {
         saveSelection->setEnabled(view->textCursor().hasSelection());
     });
@@ -180,6 +219,10 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
     auto *configLabel = new QLabel("INI: " + config->ini.path);
     configLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(configLabel);
+    auto *versionLabel = new QLabel("Serial ESP Helper — Version " + QCoreApplication::applicationVersion());
+    versionLabel->setObjectName("applicationVersion");
+    versionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(versionLabel);
     setCentralWidget(central);
     refreshProfiles(); loadProfile(p);
     worker->moveToThread(&thread);
@@ -254,7 +297,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p)
         identity->setText("No stable USB binding; only the explicit selected port is used.");
         addEvent("USB binding forgotten; session paused. Connect and Save to bind the new device.");
     });
-    connect(clear, &QPushButton::clicked, this, [this] { terminal->clear(); view->clear(); });
+    connect(clear, &QPushButton::clicked, this, [this] { terminal->clear(); renderView(); });
     connect(sendButton, &QPushButton::clicked, this, &SessionWindow::sendMessage);
     connect(sendText->lineEdit(), &QLineEdit::returnPressed, this, &SessionWindow::sendMessage);
     connect(readOnly, &QCheckBox::toggled, this, [this](bool checked) {
@@ -309,10 +352,18 @@ void SessionWindow::loadProfile(const Profile &p) {
     echo->setChecked(p.localEcho); follow->setChecked(p.follow); newline->setCurrentText(p.newline);
     terminal = std::make_unique<Terminal>(p.terminalRows, p.lineColumns);
     quint64 dropped; display->take(dropped); view->clear(); sendText->clear(); sendButton->setEnabled(false);
+    for (auto *editor : QList<QObject *>{terminalFilter, filterMode, filterCase, filterHighlight})
+        editor->blockSignals(true);
+    terminalFilter->setText(p.filterText);
+    filterMode->setCurrentIndex(p.filterMode == "expression" ? 1 : 0);
+    filterCase->setChecked(p.filterCase); filterHighlight->setChecked(p.filterHighlight);
+    for (auto *editor : QList<QObject *>{terminalFilter, filterMode, filterCase, filterHighlight})
+        editor->blockSignals(false);
+    updateFilter();
     identity->setText(p.usbSerial.isEmpty() ? "No stable USB binding; only the explicit selected port is used."
         : QString("Bound USB: %1 VID=%2 PID=%3 (port field cannot override this binding)")
             .arg(p.usbSerial).arg(p.vid).arg(p.pid));
-    setWindowTitle("Serial ESP Helper — " + p.name);
+    setWindowTitle("Serial ESP Helper " + QCoreApplication::applicationVersion() + " — " + p.name);
 }
 bool SessionWindow::collect() {
     auto values = settings.values();
@@ -321,6 +372,10 @@ bool SessionWindow::collect() {
     values["localEcho"] = echo->isChecked() ? "true" : "false";
     values["follow"] = follow->isChecked() ? "true" : "false";
     values["newline"] = newline->currentText();
+    values["filterText"] = terminalFilter->text();
+    values["filterMode"] = filterMode->currentIndex() == 1 ? "expression" : "text";
+    values["filterCase"] = filterCase->isChecked() ? "true" : "false";
+    values["filterHighlight"] = filterHighlight->isChecked() ? "true" : "false";
     Profile checked; QString error;
     if (!Profile::fromValues(settings.name, values, checked, error)) {
         QMessageBox::warning(this, "Invalid profile", error); return false;
@@ -491,9 +546,34 @@ void SessionWindow::render() {
 void SessionWindow::renderView() {
     const auto cursor = view->textCursor();
     const int scroll = view->verticalScrollBar()->value();
-    if (terminalFilter->text().isEmpty()) view->setHtml(terminal->html());
-    else view->setPlainText(filterTerminalLines(terminal->plainText(), terminalFilter->text(),
-                           filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive));
+    view->setExtraSelections({});
+    if (terminalFilter->text().isEmpty() || !filterValid) view->setHtml(terminal->html());
+    else {
+        const auto text = terminal->plainText();
+        QStringList selected;
+        QVector<bool> matched;
+        for (const auto &line : text.split('\n')) {
+            const bool match = matchesFilter(line);
+            matched << match;
+            if (match) selected << line;
+        }
+        filterStatus->setText(QString("%1 / %2 buffered rows match. Save profile to keep this filter.")
+                              .arg(selected.size()).arg(terminal->rowCount()));
+        if (!filterHighlight->isChecked()) view->setPlainText(selected.join('\n'));
+        else {
+            view->setHtml(terminal->html());
+            QList<QTextEdit::ExtraSelection> highlights;
+            for (auto block = view->document()->begin(); block.isValid(); block = block.next()) {
+                if (!matched.value(block.blockNumber())) continue;
+                QTextEdit::ExtraSelection selection;
+                selection.cursor = QTextCursor(block);
+                selection.format.setBackground(QColor("#544500"));
+                selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+                highlights << selection;
+            }
+            view->setExtraSelections(highlights);
+        }
+    }
     if (cursor.hasSelection()) {
         auto restored = view->textCursor();
         const int end = view->document()->characterCount() - 1;
@@ -503,7 +583,33 @@ void SessionWindow::renderView() {
     }
     view->verticalScrollBar()->setValue(follow->isChecked() ? view->verticalScrollBar()->maximum() : scroll);
 }
+void SessionWindow::updateFilter() {
+    auto cursor = view->textCursor(); cursor.clearSelection(); view->setTextCursor(cursor);
+    QString error;
+    filterValid = filterMode->currentIndex() == 0
+        || expressionFilter.compile(terminalFilter->text(),
+            filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive, error);
+    saveFiltered->setEnabled(filterValid && !terminalFilter->text().isEmpty());
+    terminalFilter->setPlaceholderText(filterMode->currentIndex() == 0
+        ? "Literal text (raw logs unchanged)" : "\"ord??tex*detta\" && temp >= 20");
+    filterStatus->setStyleSheet(filterValid ? "" : "QLabel { color:#d03030; font-weight:bold; }");
+    filterStatus->setText(filterValid ? "No filter. Raw logs are unchanged."
+                                     : error + " — filter not applied; showing all rows.");
+    renderView();
+}
+bool SessionWindow::matchesFilter(const QString &line) const {
+    return filterMode->currentIndex() == 1 ? expressionFilter.matches(line)
+        : line.contains(terminalFilter->text(), filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+}
+QString SessionWindow::filteredText(const QString &text) const {
+    if (filterMode->currentIndex() == 1) return expressionFilter.select(text);
+    return filterTerminalLines(text, terminalFilter->text(),
+        filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+}
 void SessionWindow::exportTerminal(ExportMode mode) {
+    if (mode == ExportMode::Filtered && !filterValid) {
+        addEvent("Cannot export filtered rows: correct the filter syntax first."); return;
+    }
     QString text;
     if (mode == ExportMode::Selection) {
         if (!view->textCursor().hasSelection()) { addEvent("Select terminal text before exporting."); return; }
@@ -511,8 +617,7 @@ void SessionWindow::exportTerminal(ExportMode mode) {
     } else {
         render();
         text = terminal->plainText();
-        if (mode == ExportMode::Filtered) text = filterTerminalLines(text, terminalFilter->text(),
-                                filterCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+        if (mode == ExportMode::Filtered) text = filteredText(text);
     }
     const QString path = QFileDialog::getSaveFileName(this, "Save terminal text (UTF-8 snapshot)",
         QDir(QFileInfo(config->ini.path).absolutePath()).filePath("terminal-"

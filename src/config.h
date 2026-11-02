@@ -12,6 +12,8 @@ struct Profile {
     bool readOnly = true, dtr = false, rts = false, localEcho = false, follow = true;
     bool autoConnect = false;
     bool autoReconnect = true, newLogOnReconnect = false;
+    QString filterText, filterMode = QStringLiteral("text");
+    bool filterCase = false, filterHighlight = false;
     int writeTimeoutMs = 2000, retryLimit = 5, terminalRows = 2000, lineColumns = 4096;
     bool logging = false, timestampMetadata = false, textLog = false;
     QString logDirectory = QStringLiteral("logs");

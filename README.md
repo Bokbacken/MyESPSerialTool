@@ -1,7 +1,7 @@
-# Serial ESP Helper — 0.21.0
+# Serial ESP Helper — 0.22.0
 
-Portabel serialterminal för ESP-enheter, primärt Windows x64. **Etapp 1**
-är denna leverans; filterparser och esptool kommer senare. Ingen Python,
+Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
+trafikloggning och uttrycksfilter finns; esptool kommer i en senare etapp. Ingen Python,
 .NET, installation eller administratörsbehörighet behövs för terminalen.
 USB-drivrutin för den faktiska enheten kan fortfarande behövas.
 
@@ -29,6 +29,10 @@ egna villkor. Detta är inte juridisk rådgivning.
 2. Packa upp **hela** ZIP-filen i en skrivbar katalog. Starta
    `SerialESPHelper.exe` därifrån; flytta inte EXE-filen ensam. Ingen
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
+   Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
+   Om Expression-väljaren saknas och
+   titeln inte visar 0.22.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   direkt från det nyuppackade paketet, inte via en gammal genväg.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
    uppdateras automatiskt, men portfältet är redigerbart så att en frånkopplad
@@ -121,10 +125,13 @@ det påverkar inte diskloggen.
 Byte av loggningsinställningar rensar inte terminalbufferten. Om dess gränser
 minskas tas överskjutande äldre rader/kolumner bort.
 
-Skriv i sökfältet under terminalen för att visa rader som innehåller texten.
-**Match case** väljer skiftlägeskänslighet. Detta är vanlig textsökning,
-inte regex eller ett booleskt filteruttryck. Töm fältet för att återställa
-den ofiltrerade vyn. Filtrerad visning använder oformaterad text utan ANSI-färger.
+Välj **Text** för vanlig bokstavlig textsökning eller **Expression** för
+uttrycken nedan. **Match case** styr skiftlägeskänslighet i både sökord och
+fältnamn. Töm fältet för ofiltrerad vy. **Highlight matches** behåller alla rader
+med färgmarkerade träffrader; annars visas bara träffarna som oformaterad text.
+Träffräknaren avser raderna i den kvarvarande bufferten, inte hela sessionen.
+**Save profile** sparar filtertext, läge, skiftlägesval och markering per profil.
+**Filter help** visar skrivregler och exempel direkt i programmet.
 
 **Save whole buffer…** sparar hela den kvarvarande terminalbufferten, oavsett
 filter. **Save selection…** sparar den markerade texten från vyn.
@@ -132,6 +139,50 @@ filter. **Save selection…** sparar den markerade texten från vyn.
 utan ANSI-formatering, inte en exakt råbyte-logg och inte hela sessionens historik
 om äldre rader redan rullat ur bufferten. Råloggning och mottagning fortsätter
 oberoende av filter/export; exporten ändrar aldrig befintliga råloggar.
+
+### Uttrycksfilter: wildcards, logik och tal
+
+I **Expression** ska sökord stå inom dubbla citattecken. De matchar var som
+helst på samma terminalrad. `?` matchar exakt ett Unicode-tecken och `*`
+noll eller fler tecken. `"ord??tex*detta"` matchar exempelvis
+`ordettexharvadsomhelsthärdetta`. `"\?"` och `"\*"` söker de bokstavliga
+tecknen, `\"` söker citattecken och `\\` söker backslash. I **Text** är
+alla tecken bokstavliga och inga citattecken eller escapes behövs.
+
+Kombinera villkor med `!` (inte), `&&` (och), `||` (eller) och parenteser.
+Prioriteten är `!` före `&&` före `||`. Exempel:
+
+```text
+("error*flash" || "warn??") && !"ignored"
+temp >= 20 && temp < 30
+"sensor*" && voltage >= 3.1
+number(2) >= -1.5e2 && number(2) <= 100
+```
+
+`temp >= 20` läser ett fält som `temp=23.5` eller `temp: 23.5`.
+Fältnamn börjar med bokstav/understreck och får innehålla bokstäver,
+siffror, understreck, punkt och bindestreck (ASCII). Vid upprepade fält
+används första giltiga numeriska tilldelningen.
+`number(2)` läser det andra fristående talet från vänster i raden;
+positioner är 1–1000. Alla fristående tal räknas, även numeriska
+tidsstämpeldelar, så välj namngivna fält när loggformatet tillåter det.
+
+Jämförelser: `<`, `<=`, `==`, `!=`, `>=`, `>`. Intervall skrivs med två
+jämförelser och `&&`. Tal får ha tecken, decimalpunkt och exponent,
+exempelvis `-23.5`, `.5` och `1e-3`. Decimalkomma och enheter stöds inte:
+`23C` och siffrorna i `ESP32` räknas inte som fristående tal.
+Saknade, ogiltiga och oändliga tal uppfyller ingen jämförelse, inte ens `!=`.
+`!(temp > 20)` matchar däremot en rad där `temp` saknas, eftersom hela
+jämförelsens resultat negeras. `==` använder exakt flyttalsjämförelse;
+använd intervall för mätvärden med tolerans.
+
+Syntaxfel visas med position. Ett ogiltigt filter tillämpas inte:
+alla rader visas och filtrerad export är spärrad tills felet rättats.
+Parsern kör ingen kod, shell eller användarstyrda reguljära uttryck.
+Gränser: 4096 tecken, 128 villkor/operatorer och 32 nästlingsnivåer.
+INI-filens vanliga strängregler gäller även sparade filter, se `example.ini`.
+Filtren använder terminalrader efter UTF-8/ANSI-tolkning och eventuell
+kolumnbrytning, aldrig råloggen. Tidsintervallsbaserad export återstår.
 
 Om INI-katalogen inte är skrivbar visas ett fel och du får välja en annan fil;
 programmet flyttar inte inställningarna till AppData i smyg. Säkerhetskopiera
@@ -167,7 +218,7 @@ gäller råsegment; text/offsetlogg roteras tillsammans med råloggen och
 kan bli större på grund av tidsstämplar och byte-escaping.
 Skrivfel, full disk och kööverflöde visas; kontrollera varningar innan du
 förlitar dig på en logg. Loggar kan innehålla privata data och laddas aldrig
-upp automatiskt. Senare filter får endast påverka vyn/export, inte råloggen.
+upp automatiskt. Filter påverkar endast vyn/export, inte råloggen.
 
 ## Bygga och testa
 
@@ -201,7 +252,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.21.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.22.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

@@ -1,4 +1,5 @@
 #include "config.h"
+#include "filter.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -13,6 +14,8 @@ QMap<QString, QString> Profile::values() const {
     v["stopBits"] = stopBits; v["flowControl"] = flowControl; v["newline"] = newline;
     v["logDirectory"] = logDirectory;
     v["logName"] = logName;
+    v["filterText"] = filterText; v["filterMode"] = filterMode;
+    flag("filterCase", filterCase); flag("filterHighlight", filterHighlight);
     number("logSeconds", logSeconds); number("displayQueueBytes", displayQueueBytes);
     flag("autoReconnect", autoReconnect); flag("newLogOnReconnect", newLogOnReconnect);
     number("baud", baud); number("dataBits", dataBits); number("vid", vid); number("pid", pid);
@@ -70,6 +73,8 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !choice("stopBits", {"1", "1.5", "2"}, p.stopBits)
         || !choice("flowControl", {"none", "hardware", "software"}, p.flowControl)
         || !choice("newline", {"none", "lf", "cr", "crlf"}, p.newline)
+        || !choice("filterMode", {"text", "expression"}, p.filterMode)
+        || !boolean("filterCase", p.filterCase) || !boolean("filterHighlight", p.filterHighlight)
         || !boolean("readOnly", p.readOnly) || !boolean("autoConnect", p.autoConnect)
         || !boolean("dtr", p.dtr) || !boolean("rts", p.rts)
         || !boolean("localEcho", p.localEcho) || !boolean("follow", p.follow)
@@ -85,14 +90,22 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
     if (p.logName.isEmpty() || p.logName.size() > 160
         || literal.contains(QRegularExpression("[^A-Za-z0-9_-]")))
         return fail("logName (use letters, digits, _-, and {profile}/{date}/{time}/{port}/{serial}/{id})");
-    for (const auto &key : {"port", "usbSerial", "logDirectory"}) {
+    for (const auto &key : {"port", "usbSerial", "logDirectory", "filterText"}) {
         const QString s = v.value(key, p.values().value(key));
         if (s.size() > 4096 || s.contains(QRegularExpression("[\\r\\n\\x00]"))
             || s != s.trimmed() || s.contains(QRegularExpression("\\s[;#]")))
             return fail(key);
         if (QString(key) == "port") p.port = s;
         else if (QString(key) == "usbSerial") p.usbSerial = s;
-        else p.logDirectory = s;
+        else if (QString(key) == "logDirectory") p.logDirectory = s;
+        else p.filterText = s;
+    }
+    if (p.filterMode == "expression") {
+        LineFilter filter;
+        if (!filter.compile(p.filterText, p.filterCase ? Qt::CaseSensitive : Qt::CaseInsensitive, error)) {
+            error = "Profile '" + name + "': " + error;
+            return false;
+        }
     }
     if (p.logDirectory.isEmpty()) return fail("logDirectory");
     if ((!p.usbSerial.isEmpty() && (p.vid < 0 || p.pid < 0))
