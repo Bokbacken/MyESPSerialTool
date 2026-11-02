@@ -118,8 +118,8 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     output->setReadOnly(true);
     layout->addWidget(output, 1);
     auto *warning = new QLabel(
-        "Read-only diagnostics only: this interface has no flash erase or write commands. "
-        "A flash read stores the returned bytes in the selected file.");
+        "Flash contents are only read, never erased or written. Diagnostics can still reset "
+        "the ESP into its bootloader and back, interrupting the running firmware and serial capture.");
     warning->setWordWrap(true);
     layout->addWidget(warning);
 
@@ -187,6 +187,26 @@ void EsptoolDialog::begin(Operation requested) {
         || baudEdit->text().toInt() <= 0)) {
         QMessageBox::warning(this, "Port required", "Select and connect a serial port first.");
         return;
+    }
+    if (requested != Operation::Version) {
+        QMessageBox confirmation(QMessageBox::Warning, "Diagnostics may restart the ESP",
+            "esptool can reset the ESP into its bootloader and restart it afterwards. "
+            "Running firmware and serial capture will be interrupted; unsaved runtime state may be lost.\n\n"
+            "Bootloader mode cannot be reliably determined from terminal traffic. "
+            "Flash read-only does not mean reset-free.",
+            QMessageBox::Ok | QMessageBox::Cancel, this);
+        confirmation.setObjectName("esptoolResetConfirmation");
+        confirmation.setTextFormat(Qt::PlainText);
+        confirmation.button(QMessageBox::Ok)->setText("Continue diagnostics");
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.setEscapeButton(QMessageBox::Cancel);
+        if (requested == Operation::ChipAndFlash)
+            confirmation.setInformativeText(
+                "Chip + flash info runs two commands and may cause more than one reset cycle.");
+        if (confirmation.exec() != QMessageBox::Ok) {
+            tempFile.reset();
+            return;
+        }
     }
     operation = requested;
     busy = true;

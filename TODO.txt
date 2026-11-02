@@ -1,11 +1,11 @@
-Serial ESP Helper — leveransplan, version 0.23.0
+Serial ESP Helper — leveransplan, version 0.23.1
 ================================================
 
 AVGRÄNSNING
 Detta repo började med enbart README och innehåller ingen ESP32-firmware,
 äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
 komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
-Version 0.23.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+Version 0.23.1 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
 SÅ HÅLLER VI BACKLOGGEN AKTUELL
@@ -66,6 +66,8 @@ Kvarvarande verkliga tester (ej påstått utförda):
     chip-/flashinfo, partitionstabell, rådump och coredump-partition.
 [ ] Avbryt esptool och simulera saknat verktyg/port, felaktig version och
     icke-noll exitstatus; verifiera portåterställning och att flash är oförändrad.
+[ ] Verifiera resetvarningen på verklig Windows-/ESP-hårdvara: Avbryt ska
+    inte köra verktyget, och Fortsätt ska tillåta den valda operationen.
 
 ETAPP 2 — avancerade filter och export (delvis implementerad)
 [x] Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader.
@@ -87,18 +89,29 @@ ETAPP 3 — esptool-portöverlämning/chipinfo/rådump (implementerad i 0.23.0)
 [x] Exklusiv portöverlämning och återställning även efter fel/avbrytning;
     manuell paus avbryter verktyget och förhindrar återanslutning.
 [x] Visa förlopp, stdout/stderr och exitstatus.
+[x] 0.23.1: bekräftelse före varje enhetsoperation om reset till bootloader
+    och tillbaka, avbruten firmware/serialinsamling och förlust av RAM-tillstånd.
+    Avbryt är standard; versionskontroll är undantagen. Bootloaderläge gissas inte.
 [x] Chip-/revisions- och flash-ID, ESP-IDF-standardens partitionstabell,
     uttrycklig rå flashläsning och full partitionsdump (inklusive coredump).
 [x] Endast läskommandon; temporära utdata storlekskontrolleras och atomiskt
     sparas. Automatiserade tester täcker versioner, argument, parser och
     portöverlämning. Verkligt ESP-/Windows-test återstår i matrisen.
+    Användaråterkoppling: viss ESP-diagnostik i 0.23.0 fungerar, men resetar
+    till bootloader och tillbaka. Detta ersätter inte hela acceptansmatrisen.
 
 ETAPP 4 — verifierad flashprogrammering (ej implementerad)
+- Första delsteget: skrivfri förhandsgranskning av ett explicit flashpaket.
+  Visa källfiler, chipmål, storlekar, adresser och berörda erase-sektorer.
+  Avvisa saknade/ändrade filer, okänt format, fel chip, överlapp och intervall
+  utanför flash. Godkända/avvisade paket ska verifieras med fixture-tester.
 - App, bootloader och merged image via verifierat manifest/flasher_args.json/
   partitionstabell eller uttryckligt användarval, aldrig filnamnsgissningar.
 - Kontrollera chip, storlekar, överlapp och flashadresser.
 - Visa exakt radering/skrivning; kräv bekräftelse.
 - Avbryt vid secure boot/flash encryption utan uttryckligt stöd.
+- Innan skrivning: verifiera enhetens säkerhetsstatus; okänd status ska stoppa
+  operationen. Ny bekräftelse för exakt radering/skrivning krävs utöver resetvarning.
 - Seriell partitionsskrivning är inte verklig OTA; håll begreppen åtskilda.
 
 ETAPP 5 — Raspberry Pi/avancerad diagnostik (ej implementerad)

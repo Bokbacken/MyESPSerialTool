@@ -7,6 +7,7 @@
 #include <QDialogButtonBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -14,6 +15,7 @@
 #include <QTextEdit>
 #include <QTextCursor>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QFile>
 #include <QDir>
 #include <QJsonArray>
@@ -31,22 +33,31 @@ public:
 };
 #include <QTest>
 
+static void acceptResetWarning(QObject *context) {
+    QTimer::singleShot(0, context, [] {
+        auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        QVERIFY(confirmation);
+        QCOMPARE(confirmation->objectName(), QString("esptoolResetConfirmation"));
+        confirmation->button(QMessageBox::Ok)->click();
+    });
+}
+
 class WindowTests : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.23.0");
+        QCoreApplication::setApplicationVersion("0.23.1");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.23.0"));
+        QVERIFY(window.windowTitle().contains("0.23.1"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.23.0"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.23.1"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -137,6 +148,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("esptool v5.1.0"), 5000);
         QCOMPARE(acquired, 0);
 
+        acceptResetWarning(&dialog);
         chip->click();
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("finished")
                                  || status->text().contains("failed"), 5000);
@@ -157,12 +169,14 @@ private slots:
         QVERIFY(flashArgs.contains("flash-id"));
 
         qputenv("FAKE_ESPTOOL_MODE", "fail");
+        acceptResetWarning(&dialog);
         chip->click();
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("failed"), 5000);
         QCOMPARE(acquired, 2);
         QCOMPARE(released, 2);
 
         qputenv("FAKE_ESPTOOL_MODE", "sleep");
+        acceptResetWarning(&dialog);
         chip->click();
         QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("Running chip-id"), 5000);
         cancel->click();
@@ -189,6 +203,7 @@ private slots:
         window.findChild<QPushButton *>("esptoolDiagnostics")->click();
         auto *dialog = window.findChild<EsptoolDialog *>();
         QVERIFY(dialog);
+        acceptResetWarning(dialog);
         dialog->findChild<QPushButton *>("chipFlashInfo")->click();
         QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QLabel *>("esptoolStatus")
             ->text().contains("Running chip-id"), 5000);
@@ -199,6 +214,99 @@ private slots:
             ->text().contains("failed"), 5000);
         QVERIFY(!serial->opened);
         qunsetenv("FAKE_ESPTOOL_MODE");
+    }
+    void diagnosticsRequireResetConfirmation_data() {
+        QTest::addColumn<QString>("action");
+        QTest::newRow("chip-and-flash") << QString("chipFlashInfo");
+        QTest::newRow("partition-table") << QString("readPartitionTable");
+    }
+    void diagnosticsRequireResetConfirmation() {
+        QFETCH(QString, action);
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        int acquired = 0, released = 0;
+        EsptoolDialog dialog(profile, [&acquired](QString &) { ++acquired; return true; },
+                             [&released] { ++released; });
+        auto *output = dialog.findChild<QPlainTextEdit *>("esptoolOutput");
+        auto *button = dialog.findChild<QPushButton *>(action);
+        QVERIFY(output && button);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            QTimer::singleShot(0, &dialog, [&] {
+                auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                QVERIFY(confirmation);
+                QCOMPARE(confirmation->objectName(), QString("esptoolResetConfirmation"));
+                QCOMPARE(confirmation->defaultButton(), confirmation->button(QMessageBox::Cancel));
+                QVERIFY(confirmation->text().contains("unsaved runtime state"));
+                QVERIFY(confirmation->text().contains("reset-free"));
+                if (action == "chipFlashInfo")
+                    QVERIFY(confirmation->informativeText().contains("two commands"));
+                QCOMPARE(acquired, 0);
+                QVERIFY(output->toPlainText().isEmpty());
+                QTest::keyClick(confirmation, Qt::Key_Escape);
+            });
+            button->click();
+            QCOMPARE(acquired, 0);
+            QCOMPARE(released, 0);
+            QVERIFY(output->toPlainText().isEmpty());
+            QVERIFY(button->isEnabled());
+        }
+    }
+    void rawDumpConfirmationCancelsBeforeProcessAndAllowsConfirmedRead() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString destination = directory.filePath("raw dump.bin");
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        int acquired = 0, released = 0;
+        EsptoolDialog dialog(profile, [&acquired](QString &) { ++acquired; return true; },
+                             [&released] { ++released; });
+        auto *output = dialog.findChild<QPlainTextEdit *>("esptoolOutput");
+        auto *status = dialog.findChild<QLabel *>("esptoolStatus");
+        for (bool proceed : {false, true}) {
+            QTimer::singleShot(0, &dialog, [&, proceed] {
+                auto *address = qobject_cast<QInputDialog *>(QApplication::activeModalWidget());
+                QVERIFY(address);
+                address->setTextValue("0x10");
+                QTimer::singleShot(0, &dialog, [&, proceed] {
+                    auto *size = qobject_cast<QInputDialog *>(QApplication::activeModalWidget());
+                    QVERIFY(size);
+                    size->setTextValue("16");
+                    QTimer::singleShot(0, &dialog, [&, proceed] {
+                        auto *save = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+                        QVERIFY(save);
+                        save->selectFile(destination);
+                        QTimer::singleShot(0, &dialog, [&, proceed] {
+                            auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                            QVERIFY(confirmation);
+                            QCOMPARE(confirmation->objectName(), QString("esptoolResetConfirmation"));
+                            QCOMPARE(acquired, 0);
+                            QVERIFY(output->toPlainText().isEmpty());
+                            confirmation->button(proceed ? QMessageBox::Ok : QMessageBox::Cancel)->click();
+                        });
+                        QMetaObject::invokeMethod(save, "accept", Qt::DirectConnection);
+                    });
+                    size->accept();
+                });
+                address->accept();
+            });
+            dialog.findChild<QPushButton *>("readRawFlash")->click();
+            if (!proceed) {
+                QCOMPARE(acquired, 0);
+                QCOMPARE(released, 0);
+                QVERIFY(output->toPlainText().isEmpty());
+                QVERIFY(!QFileInfo::exists(destination));
+                QVERIFY(QDir(directory.path()).entryList(QDir::Files | QDir::Hidden).isEmpty());
+            } else {
+                QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith("Saved 16 exact bytes"), 5000);
+                QCOMPARE(acquired, 1);
+                QCOMPARE(released, 1);
+                QFile dump(destination);
+                QVERIFY(dump.open(QIODevice::ReadOnly));
+                QCOMPARE(dump.readAll(), QByteArray(16, char(0xa5)));
+            }
+        }
     }
     void loggingSettingsAreVisibleEditableAndPersisted() {
         QTemporaryDir directory;

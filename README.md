@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.23.0
+# Serial ESP Helper — 0.23.1
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.23.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.23.1 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
@@ -91,6 +91,15 @@ ESP-IDF:s partitionstabell från standardadressen `0x8000`, läsa ett uttrycklig
 adressintervall eller spara en hel vald partition, inklusive en eventuell
 coredump-partition. Rådumpar verifieras mot förväntad storlek och skrivs
 atomiskt till målfiler. Förlopp, fullständig stdout/stderr och exitstatus visas.
+
+**Flashläsning är inte reset-fri.** Före varje enhetsoperation visas en
+bekräftelse med **Cancel** som standard. esptool kan starta om ESP:n till
+bootloaderläge och tillbaka; körande firmware och serialinsamling avbryts,
+och osparat tillstånd i RAM kan gå förlorat. **Chip + flash info** kör två
+kommandon och kan ge flera resetcykler. Versionskontrollen påverkar inte
+enheten och kräver därför ingen sådan bekräftelse. Bootloaderläge kan inte
+avgöras tillförlitligt från terminaltrafik; tidigare diagnostik eller
+bootmeddelanden gör inte nästa operation reset-fri.
 
 Porten stängs exklusivt innan esptool startas. Efter avslut eller fel återställs
 den tidigare anslutningsavsikten; **Manual pause** under en operation avbryter
@@ -274,7 +283,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.23.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.23.1`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.
