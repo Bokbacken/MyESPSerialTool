@@ -15,6 +15,12 @@ QMap<QString, QString> Profile::values() const {
     v["stopBits"] = stopBits; v["flowControl"] = flowControl; v["newline"] = newline;
     v["logDirectory"] = logDirectory;
     v["logName"] = logName;
+    v["logExtension"] = logExtension;
+    v["rawLogExtension"] = rawLogExtension;
+    v["logMode"] = logMode;
+    flag("terminalTimestamp", terminalTimestamp);
+    flag("textTimestamp", textTimestamp);
+    flag("timestampMilliseconds", timestampMilliseconds);
     v["filterText"] = filterText; v["filterMode"] = filterMode;
     flag("filterCase", filterCase); flag("filterHighlight", filterHighlight);
     number("logSeconds", logSeconds); number("displayQueueBytes", displayQueueBytes);
@@ -28,7 +34,6 @@ QMap<QString, QString> Profile::values() const {
     flag("autoConnect", autoConnect);
     flag("localEcho", localEcho); flag("follow", follow); flag("logging", logging);
     flag("timestampMetadata", timestampMetadata);
-    flag("textLog", textLog);
     return v;
 }
 
@@ -80,11 +85,29 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !boolean("dtr", p.dtr) || !boolean("rts", p.rts)
         || !boolean("localEcho", p.localEcho) || !boolean("follow", p.follow)
         || !boolean("logging", p.logging) || !boolean("timestampMetadata", p.timestampMetadata)
-        || !boolean("textLog", p.textLog))
+        || !boolean("terminalTimestamp", p.terminalTimestamp)
+        || !boolean("textTimestamp", p.textTimestamp)
+        || !boolean("timestampMilliseconds", p.timestampMilliseconds))
         return false;
     if (!boolean("autoReconnect", p.autoReconnect)
         || !boolean("newLogOnReconnect", p.newLogOnReconnect)) return false;
     p.logName = v.value("logName", p.logName);
+    if (!v.contains("logMode") && v.contains("textLog")) {
+        bool legacyText = false;
+        if (!boolean("textLog", legacyText)) return false;
+        p.logMode = legacyText ? "both" : "raw";
+        if (legacyText) p.logExtension = ".text";
+    }
+    if (!choice("logMode", {"text", "raw", "both"}, p.logMode)) return false;
+    p.logExtension = v.value("logExtension", p.logExtension);
+    p.rawLogExtension = v.value("rawLogExtension", p.rawLogExtension);
+    for (const auto &extension : {p.logExtension, p.rawLogExtension}) {
+        if (!QRegularExpression("^\\.[A-Za-z0-9]{1,10}$").match(extension).hasMatch()
+            || QStringList{".meta", ".session", ".lock"}.contains(extension.toLower()))
+            return fail("log extension (dot and 1..10 letters/digits; .meta/.session/.lock reserved)");
+    }
+    if (p.logMode == "both" && p.logExtension.compare(p.rawLogExtension, Qt::CaseInsensitive) == 0)
+        return fail("log extensions (Text and Raw must differ in Both mode)");
     QString literal = p.logName;
     for (const auto &token : {"{profile}", "{date}", "{time}", "{port}", "{serial}", "{id}"})
         literal.replace(token, "");

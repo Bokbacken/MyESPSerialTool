@@ -7,17 +7,20 @@
 #include <QQueue>
 #include <QThread>
 #include <QWaitCondition>
+#include <QLockFile>
+#include <memory>
 
 QString logFileStem(const Profile &profile, const QDateTime &started, const QString &id);
 
 class RotatingSink {
 public:
     RotatingSink(const Profile &profile, const QString &base);
+    ~RotatingSink();
     bool append(const QByteArray &bytes, const QDateTime &received, QString &error);
     bool begin(const QDateTime &started, QString &error);
     bool event(const QString &message, const QDateTime &time, QString &error);
     bool finish(const QString &reason, const QDateTime &ended, QString &error);
-    QString fileName() const { return base + ".raw"; }
+    QString fileName() const { return base + (profile.rawLogging() ? profile.rawLogExtension : profile.logExtension); }
 private:
     Profile profile;
     QString base;
@@ -26,6 +29,9 @@ private:
     QDateTime sessionStarted, segmentStarted;
     qint64 offset = 0, segment = 0;
     bool ended = false;
+    bool textLineStart = true;
+    bool streamsOpen = false;
+    std::unique_ptr<QLockFile> lock;
     bool open(QString &error);
     bool rotate(QString &error);
     bool writeText(const QString &decoded, const QDateTime &received, QString &error);

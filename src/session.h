@@ -52,12 +52,15 @@ QString stateName(SessionState state);
 // One bounded mailbox per window avoids an unbounded queued GUI event per RX chunk.
 class DisplayBuffer {
 public:
-    void append(const QByteArray &bytes);
+    struct Record { QByteArray bytes; QDateTime received; };
+    void append(const QByteArray &bytes, const QDateTime &received = QDateTime::currentDateTimeUtc());
     QByteArray take(quint64 &droppedBytes);
+    QVector<Record> takeRecords(quint64 &droppedBytes);
     void setLimit(qsizetype bytes);
 private:
     QMutex mutex;
-    QByteArray buffer;
+    QVector<Record> records;
+    qsizetype bufferedBytes = 0;
     quint64 dropped = 0;
     qsizetype limit = 262144;
 };

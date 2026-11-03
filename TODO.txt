@@ -1,11 +1,11 @@
-Serial ESP Helper — leveransplan, version 0.24.0
+Serial ESP Helper — leveransplan, version 0.25.0
 ================================================
 
 AVGRÄNSNING
 Detta repo började med enbart README och innehåller ingen ESP32-firmware,
 äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
 komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
-Version 0.24.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+Version 0.25.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
 SÅ HÅLLER VI BACKLOGGEN AKTUELL
@@ -37,6 +37,13 @@ IMPLEMENTERADE FÖRBÄTTRINGAR
 [x] Inställningsflikar för anslutning, loggning och terminal; tillgängliga under anslutning.
 [x] Tydlig trafikloggstatus/sökväg, mappval och öppna loggmapp.
 [x] Filnamnsmall med UTC-datum/tid, profil, port, serienummer och unikt ID.
+[x] 0.25.0: ID endast när {id} finns i mallen; numeriskt suffix vid kollision,
+    lås mot samtidiga skrivare. Text/Raw/Both med Text som standard för nya profiler.
+[x] Valbara separata ändelser: Text .log, Raw .raw; gamla INI-lägen migreras.
+[x] Valbara UTC-tidsstämplar per rad i terminal och Text-logg, av som standard;
+    hela sekunder eller exakt tre decimaler. Raw-bytes förblir oförändrade.
+[x] Spara-knapp på varje inställningsflik och i esptool-vyn, separat osparad Apply.
+    Profil/global/session-only märks; sparad esptool-sökväg och loggval reload-testas.
 [x] Råsegmentrotation på storlek/tid och rullande lagring per loggserie.
 [x] Val mellan ny loggserie och fortsatt logg vid automatisk återanslutning.
 [x] Inställningar för terminalrader, kolumner och separat mottagningskö.
@@ -72,6 +79,8 @@ Kvarvarande verkliga tester (ej påstått utförda):
     image: rätt adresser/storlekar, app-passning och tydlig skrivspärr.
 [ ] Jämför läst OTA-layout/otadata med ESP-IDF-verktyg och firmwarets rapport
     om körande partition; testa NEW/PENDING_VERIFY och rollback efter reset.
+[ ] Verifiera 0.25.0 på Windows: spara från alla flikar/diagnostik, behåll INI
+    mellan byggen, Text/Raw/Both, ändelser, UTC-millisekunder och samtidiga namn.
 
 ETAPP 2 — avancerade filter och export (delvis implementerad)
 [x] Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader.
@@ -124,7 +133,7 @@ ETAPP 4 — verifierad flashprogrammering (första skrivfria delsteget i 0.24.0)
 [ ] Tillförlitlig information från firmware om körande app; säker strategi för
     inaktiv partitionsskrivning, verifiering och atomisk/redundant OTA-startväxling.
 [ ] Visa exakt radering/skrivning; kräv ny bekräftelse utöver resetvarningen.
-[ ] Faktisk flashskrivning och ändring av otadata. Allt detta är spärrat i 0.24.0.
+[ ] Faktisk flashskrivning och ändring av otadata. Allt detta är spärrat även i 0.25.0.
     Seriell partitionsskrivning är inte verklig OTA; håll begreppen åtskilda.
 
 ETAPP 5 — Raspberry Pi/avancerad diagnostik (ej implementerad)

@@ -27,9 +27,11 @@ public:
                   ReleasePort releasePort, QWidget *parent = nullptr);
     ~EsptoolDialog() override;
     QString configuredPath() const;
+    void settingsSaved(const QString &iniPath);
     void cancelCurrent();
     void cancelAndWait();
 signals:
+    void saveSettingsRequested();
     void pathChanged(const QString &path);
 protected:
     void closeEvent(QCloseEvent *event) override;

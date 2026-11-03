@@ -65,6 +65,10 @@ private slots:
         QCOMPARE(p.baud, 115200); QCOMPARE(p.dataBits, 8);
         QVERIFY(p.esptoolPath.isEmpty());
         QVERIFY(p.readOnly);
+        QCOMPARE(p.logExtension, QString(".log"));
+        QCOMPARE(p.rawLogExtension, QString(".raw"));
+        QCOMPARE(p.logMode, QString("text"));
+        QVERIFY(!p.terminalTimestamp && !p.textTimestamp && !p.timestampMilliseconds);
         QVERIFY(!p.autoConnect);
         QVERIFY(p.autoReconnect); QVERIFY(!p.newLogOnReconnect);
         QCOMPARE(p.parity, QString("none")); QCOMPARE(p.flowControl, QString("none"));
@@ -90,7 +94,7 @@ private slots:
             {"displayQueueBytes", "0"}, {"logName", ""}, {"logName", "../file"},
             {"esptoolPath", "C:/tools/esptool.exe\n--erase"},
             {"logSeconds", "31536001"}, {"displayQueueBytes", "67108865"}};
-        QString error; Profile p;
+        QString error; Profile p; p.logMode = "raw";
         for (const auto &value : invalid)
             QVERIFY2(!Profile::fromValues("ESP", {{value.first, value.second}}, p, error), qPrintable(value.first));
         for (const auto &name : {"{unknown}", "C:\\log", "{profile}.raw", "{date", "CON.txt"})
@@ -106,11 +110,126 @@ private slots:
         QCOMPARE(logFileStem(p, time, "unique"),
                  QString("20260102-030405-006-ESP__date_-_dev_ttyACM0-SER_1-unique"));
         p.logName = "{profile}";
-        QVERIFY(logFileStem(p, time, "unique").endsWith("-unique"));
+        QCOMPARE(logFileStem(p, time, "unique"), QString("ESP__date_"));
+    }
+    void logExtensionsAndTimestampSettingsRoundtrip() {
+        ArtifactDirectory d;
+        IniFile ini; QString error;
+        QVERIFY(ini.load(d.file("settings.ini"), error));
+        auto &p = ini.profiles.first();
+        p.rawLogExtension = ".bin";
+        p.logMode = "raw";
+        p.terminalTimestamp = p.textTimestamp = p.timestampMilliseconds = true;
+        QVERIFY(ini.save(error));
+        IniFile restored;
+        QVERIFY(restored.load(ini.path, error));
+        QCOMPARE(restored.profiles.first().values(), p.values());
+        Profile checked;
+        for (const auto &extension : {"log", "../log", ".meta", ".SESSION", ".lock", ".a-b"})
+            QVERIFY(!Profile::fromValues("ESP", {{"logExtension", extension}}, checked, error));
+        QVERIFY(Profile::fromValues("ESP", {{"logExtension", ".bin"}}, checked, error));
+        RotatingSink sink(p, d.file("custom"));
+        QVERIFY(sink.append(QByteArray::fromHex("00ff0a"), QDateTime::currentDateTimeUtc(), error));
+        QCOMPARE(readFile(d.file("custom.bin")), QByteArray::fromHex("00ff0a"));
+        QVERIFY(!QFileInfo::exists(d.file("custom.log")));
+    }
+    void logModesAndLegacyMigration() {
+        ArtifactDirectory d;
+        QString error;
+        Profile migrated;
+        QVERIFY(Profile::fromValues("ESP", {{"textLog", "false"}}, migrated, error));
+        QCOMPARE(migrated.logMode, QString("raw"));
+        QVERIFY(Profile::fromValues("ESP", {{"textLog", "true"}}, migrated, error));
+        QCOMPARE(migrated.logMode, QString("both"));
+        QCOMPARE(migrated.logExtension, QString(".text"));
+        QVERIFY(Profile::fromValues("ESP", {{"textLog", "true"}, {"logMode", "text"}}, migrated, error));
+        QCOMPARE(migrated.logMode, QString("text"));
+        QVERIFY(!Profile::fromValues("ESP", {{"logMode", "unknown"}}, migrated, error));
+        QVERIFY(!Profile::fromValues("ESP", {{"logMode", "both"}, {"logExtension", ".RAW"}}, migrated, error));
+        const QByteArray bytes = QByteArray::fromHex("00e282acff410a");
+        const auto received = QDateTime::fromString("2026-01-02T03:04:05.006Z", Qt::ISODateWithMs);
+        for (const auto &mode : {QString("text"), QString("raw"), QString("both")}) {
+            Profile p; p.logMode = mode; p.timestampMetadata = true; p.logBytes = 4;
+            const QString base = d.file(mode);
+            RotatingSink sink(p, base);
+            QVERIFY2(sink.append(bytes, received, error), qPrintable(error));
+            QVERIFY(sink.finish("done", received, error));
+            QCOMPARE(QFileInfo::exists(base + ".raw"), p.rawLogging());
+            QCOMPARE(QFileInfo::exists(base + ".meta"), p.rawLogging());
+            QCOMPARE(QFileInfo::exists(base + ".log"), p.textLogging());
+            if (p.rawLogging()) QCOMPARE(readFile(base + ".raw.1") + readFile(base + ".raw"), bytes);
+            if (p.textLogging()) {
+                const auto text = readFile(base + ".log.1") + readFile(base + ".log");
+                QCOMPARE(text, QString::fromUtf8("\\x00€\\xFFA\n").toUtf8());
+                QVERIFY(!text.contains("UTC]"));
+            }
+        }
+    }
+    void timestampsAreOptionalMillisecondPreciseAndDoNotChangeBytes() {
+        ArtifactDirectory d;
+        const auto received = QDateTime::fromString("2026-01-02T03:04:05.006Z", Qt::ISODateWithMs);
+        for (bool milliseconds : {false, true}) {
+            Profile p; p.logMode = "both"; p.logging = p.textTimestamp = true;
+            p.timestampMilliseconds = milliseconds;
+            const QString base = d.file(milliseconds ? "milliseconds" : "seconds");
+            RotatingSink sink(p, base); QString error;
+            QVERIFY(sink.append("first", received, error));
+            QVERIFY(sink.append(" part\nsecond\n", received.addSecs(1), error));
+            const QByteArray expected = (milliseconds
+                ? "[2026-01-02 03:04:05.006 UTC] first part\n[2026-01-02 03:04:06.006 UTC] second\n"
+                : "[2026-01-02 03:04:05 UTC] first part\n[2026-01-02 03:04:06 UTC] second\n");
+            QCOMPARE(readFile(base + ".log"), expected);
+            QCOMPARE(readFile(base + ".raw"), QByteArray("first part\nsecond\n"));
+        }
+        Terminal terminal(3, 32);
+        terminal.feed("\x1b[31mfirst", received);
+        terminal.feed(" part\nsecond", received.addSecs(1));
+        QCOMPARE(terminal.plainText(), QString("first part\nsecond"));
+        QVERIFY(!terminal.html().contains("UTC]"));
+        QVERIFY(terminal.html(true, true).contains("03:04:05.006 UTC]"));
+        QVERIFY(terminal.html(true, false).contains("03:04:06 UTC]"));
+        QVERIFY(!terminal.html(true, false).contains(".006"));
+        terminal.feed("\r\x1b[2Kreplaced", received.addSecs(2));
+        QCOMPARE(terminal.timestampPrefix(1, true), QString("[2026-01-02 03:04:07.006 UTC] "));
+        terminal.feed("\nthird\nfourth\nfifth", received.addSecs(3));
+        QCOMPARE(terminal.rowCount(), 3);
+        terminal.setLimits(2, 32);
+        QVERIFY(terminal.html(true, true).contains("03:04:08.006"));
+        terminal.clear();
+        QVERIFY(!terminal.html(true, true).contains("UTC]"));
+        DisplayBuffer display;
+        display.append("a", received);
+        display.append("b", received.addMSecs(1));
+        quint64 dropped;
+        const auto records = display.takeRecords(dropped);
+        QCOMPARE(records.size(), 2);
+        QCOMPARE(records[0].received, received);
+        QCOMPARE(records[1].received, received.addMSecs(1));
+        QCOMPARE(dropped, quint64(0));
+    }
+    void idFreeNamesDoNotOverwritePreviousSessionsOrShareActiveLogSets() {
+        ArtifactDirectory d;
+        auto *serial = new FakeSerial; serial->devices = {{"A", "", "", -1, -1}};
+        SessionWorker worker(std::make_shared<DisplayBuffer>(), serial);
+        Profile p; p.logMode = "raw"; p.port = "A"; p.logging = true; p.logName = "capture";
+        worker.configure(p, d.path); worker.resume(); worker.poll();
+        serial->inject("first"); worker.pause();
+        worker.resume(); worker.poll();
+        serial->inject("second"); worker.pause();
+        QCOMPARE(readFile(d.file("capture.raw")), QByteArray("first"));
+        QCOMPARE(readFile(d.file("capture-1.raw")), QByteArray("second"));
+        const auto time = QDateTime::currentDateTimeUtc();
+        QString error;
+        RotatingSink first(p, d.file("locked"));
+        RotatingSink second(p, d.file("locked"));
+        QVERIFY(first.append("safe", time, error));
+        QVERIFY(!second.append("unsafe", time, error));
+        QVERIFY(error.contains("already in use"));
+        QCOMPARE(readFile(d.file("locked.raw")), QByteArray("safe"));
     }
     void timeAndSizeRotationKeepOnlyThisLogSet() {
         ArtifactDirectory d;
-        Profile p; p.logBytes = 4; p.logSeconds = 10; p.logRetention = 1;
+        Profile p; p.logMode = "raw"; p.logBytes = 4; p.logSeconds = 10; p.logRetention = 1;
         const auto time = QDateTime::fromString("2026-01-02T03:04:05Z", Qt::ISODate);
         QString error;
         QVERIFY(writeFile(d.file("other.raw"), "untouched"));
@@ -149,7 +268,7 @@ private slots:
         fake->devices = {{"COM3", "", "ABC", 10, 20}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
         QSignalSpy paths(&worker, &SessionWorker::logFileChanged);
-        Profile p; p.port = "COM3"; p.logging = true; p.autoConnect = startup;
+        Profile p; p.logMode = "raw"; p.port = "COM3"; p.logging = true; p.autoConnect = startup;
         p.autoReconnect = reconnect; p.newLogOnReconnect = newLog;
         worker.configure(p, d.path); worker.resume(); worker.poll();
         fake->inject("before");
@@ -188,7 +307,7 @@ private slots:
         ArtifactDirectory d;
         auto *fake = new FakeSerial; fake->devices = {{"COM3", "", "", -1, -1}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "COM3";
+        Profile p; p.logMode = "raw"; p.port = "COM3";
         worker.configure(p, d.path); worker.resume(); worker.poll();
         worker.setAutoReconnect(false);
         QCOMPARE(worker.state(), SessionState::Connected);
@@ -360,7 +479,7 @@ private slots:
         fake->devices = {{"COM3", "", "ABC", 10, 20}};
         SessionWorker worker(display, fake);
         QSignalSpy problems(&worker, &SessionWorker::problem);
-        Profile p; p.port = "COM3"; p.retryLimit = 2; p.autoConnect = true;
+        Profile p; p.logMode = "raw"; p.port = "COM3"; p.retryLimit = 2; p.autoConnect = true;
         worker.configure(p, d.path); worker.resume(); worker.poll();
         QCOMPARE(worker.state(), SessionState::Connected);
         QCOMPARE(worker.profile().usbSerial, QString("ABC"));
@@ -384,7 +503,7 @@ private slots:
         auto *fake = new FakeSerial;
         fake->devices = {{"COM3", "", "ABC", 10, 20}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "COM3";
+        Profile p; p.logMode = "raw"; p.port = "COM3";
         worker.configure(p, d.path); worker.resume(); worker.poll();
         QCOMPARE(worker.state(), SessionState::Connected);
 
@@ -416,7 +535,7 @@ private slots:
         auto *a = new FakeSerial; auto *b = new FakeSerial;
         a->devices = {{"A", "", "", -1, -1}}; b->devices = {{"B", "", "", -1, -1}};
         SessionWorker one(first, a), two(second, b);
-        Profile p; p.port = "A"; p.readOnly = true; p.dtr = p.rts = true;
+        Profile p; p.logMode = "raw"; p.port = "A"; p.readOnly = true; p.dtr = p.rts = true;
         one.configure(p, d.path); p.port = "B"; p.readOnly = false; two.configure(p, d.path);
         one.resume(); two.resume(); one.poll(); two.poll();
         QCOMPARE(a->lineChanges, 2); QCOMPARE(b->lineChanges, 2);
@@ -440,7 +559,7 @@ private slots:
         ArtifactDirectory d;
         auto *fake = new FakeSerial; fake->devices = {{"A", "", "", -1, -1}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "A"; worker.configure(p, d.path);
+        Profile p; p.logMode = "raw"; p.port = "A"; worker.configure(p, d.path);
         worker.monitor();
         QCOMPARE(fake->enumerations, 1);
         for (int i = 0; i < 100; ++i) worker.resume();
@@ -457,7 +576,7 @@ private slots:
         auto *fake = new FakeSerial;
         fake->devices = {{"A", "", "", -1, -1}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "A"; p.autoReconnect = false;
+        Profile p; p.logMode = "raw"; p.port = "A"; p.autoReconnect = false;
         worker.configure(p, d.path);
         worker.resume();
         worker.poll();
@@ -498,7 +617,7 @@ private slots:
         QSignalSpy problems(worker, &SessionWorker::problem);
         thread.start();
         QMetaObject::invokeMethod(worker, [worker, fake, directory = d.path] {
-            Profile p; p.port = "A"; p.readOnly = false; p.writeTimeoutMs = 100;
+            Profile p; p.logMode = "raw"; p.port = "A"; p.readOnly = false; p.writeTimeoutMs = 100;
             worker->configure(p, directory); worker->resume(); worker->poll();
             fake->inject("thread bytes"); fake->pending = 10; worker->send("123");
         }, Qt::BlockingQueuedConnection);
@@ -510,7 +629,7 @@ private slots:
     }
     void exactRawRotationAndReceptionMetadata() {
         ArtifactDirectory d;
-        Profile p; p.logBytes = 4; p.logRetention = 3; p.timestampMetadata = true;
+        Profile p; p.logMode = "raw"; p.logBytes = 4; p.logRetention = 3; p.timestampMetadata = true;
         QString error;
         const auto base = d.file("capture");
         const auto time = QDateTime::fromString("2026-01-02T03:04:05.006Z", Qt::ISODateWithMs);
@@ -528,7 +647,7 @@ private slots:
     }
     void logQueueOverflowAndIoFailure() {
         ArtifactDirectory d;
-        Profile p; p.logQueueBytes = 3;
+        Profile p; p.logMode = "raw"; p.logQueueBytes = 3;
         LogWorker logger(p, d.file("overflow"));
         QSignalSpy overflow(&logger, &LogWorker::fault);
         const auto now = QDateTime::currentDateTimeUtc();
@@ -544,13 +663,14 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!failure.isEmpty(), 3000);
         QVERIFY(failure[0][0].toString().contains("LOGGING STOPPED"));
         QVERIFY(!broken.enqueue("x", now)); broken.shutdown();
-        Profile metadataProfile; metadataProfile.timestampMetadata = true;
+        Profile metadataProfile; metadataProfile.logMode = "raw"; metadataProfile.timestampMetadata = true;
         const auto base = d.file("meta-failure");
         QVERIFY(QDir().mkdir(base + ".meta"));
         RotatingSink sink(metadataProfile, base); QString error;
         QVERIFY(!sink.append("raw", now, error));
         QVERIFY(!error.isEmpty());
-        Profile rotationProfile; rotationProfile.logBytes = 3; rotationProfile.logRetention = 1;
+        Profile rotationProfile; rotationProfile.logMode = "raw";
+        rotationProfile.logBytes = 3; rotationProfile.logRetention = 1;
         const auto rotateBase = d.file("rotation-failure");
         RotatingSink rotating(rotationProfile, rotateBase);
         QVERIFY(rotating.append("abc", now, error));
@@ -570,7 +690,7 @@ private slots:
     void optionalTextAndOffsetFlags() {
         QFETCH(bool, textLog); QFETCH(bool, timestampMetadata);
         ArtifactDirectory d;
-        Profile p; p.logging = true; p.textLog = textLog; p.timestampMetadata = timestampMetadata;
+        Profile p; p.logMode = "raw"; p.logging = true; p.logMode = textLog ? "both" : "raw"; p.logExtension = ".text"; p.timestampMetadata = timestampMetadata;
         const auto base = d.file("flags");
         const auto bytes = QByteArray::fromHex("e282acff00410d0a");
         const auto received = QDateTime::currentDateTimeUtc();
@@ -589,7 +709,7 @@ private slots:
             const auto readable = readFile(base + ".text");
             QVERIFY(readable.contains(QString::fromUtf8("€").toUtf8()));
             QVERIFY(readable.contains("\\xFF")); QVERIFY(readable.contains("\\x00"));
-            QVERIFY(readable.contains("reception-utc"));
+            QVERIFY(!readable.contains("UTC]"));
         }
         if (timestampMetadata) {
             const auto offsets = readFile(base + ".meta");
@@ -601,7 +721,7 @@ private slots:
         auto *fake = new FakeSerial;
         fake->devices = {{"COM3", "", "DUP", 10, 20}, {"COM8", "", "DUP", 10, 20}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "COM3";
+        Profile p; p.logMode = "raw"; p.port = "COM3";
         worker.configure(p, d.path); worker.resume(); worker.poll();
         QCOMPARE(fake->openCalls, 0); QVERIFY(worker.profile().usbSerial.isEmpty());
         QCOMPARE(worker.state(), SessionState::Disconnected);
@@ -620,7 +740,7 @@ private slots:
         ArtifactDirectory d;
         auto *fake = new FakeSerial; fake->devices = {{"A", "", "", -1, -1}}; fake->allowOpen = false;
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "A";
+        Profile p; p.logMode = "raw"; p.port = "A";
         worker.configure(p, d.path); worker.resume(); worker.poll(); worker.poll();
         QCOMPARE(fake->openCalls, 1); QCOMPARE(worker.state(), SessionState::Disconnected);
         const auto sessions = QDir(d.path).entryList({"*.session"}, QDir::Files);
@@ -633,7 +753,7 @@ private slots:
         ArtifactDirectory d;
         auto *fake = new FakeSerial; fake->devices = {{"A", "", "ID", 123, 456}};
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.name = "metadata profile"; p.port = "A"; p.autoConnect = true;
+        Profile p; p.logMode = "raw"; p.name = "metadata profile"; p.port = "A"; p.autoConnect = true;
         worker.configure(p, d.path); worker.resume(); worker.poll();
         fake->inject("payload must not be in session metadata");
         worker.setReadOnly(false); worker.setReadOnly(true);
@@ -665,7 +785,7 @@ private slots:
         auto *fake = new FakeSerial; fake->devices = {{"A", "", "", -1, -1}};
         fake->initialBytes = QByteArray::fromHex("00e282");
         SessionWorker worker(std::make_shared<DisplayBuffer>(), fake);
-        Profile p; p.port = "A"; p.logging = true; p.textLog = true; p.timestampMetadata = true;
+        Profile p; p.logMode = "raw"; p.port = "A"; p.logging = true; p.logMode = "both"; p.logExtension = ".text"; p.timestampMetadata = true;
         const auto before = QDateTime::currentDateTimeUtc();
         worker.configure(p, d.path); worker.resume(); worker.poll();
         fake->inject(QByteArray::fromHex("acff1b5b33316d"));
@@ -679,7 +799,7 @@ private slots:
         QVERIFY(readable.contains(QString::fromUtf8("€").toUtf8()));
         QVERIFY(readable.contains("\\x00")); QVERIFY(readable.contains("\\xFF"));
         QVERIFY(readable.contains("\\x1B[31m")); QVERIFY(readable.contains("\\xE2"));
-        QVERIFY(readable.contains("reception-utc"));
+        QVERIFY(!readable.contains("UTC]"));
         QCOMPARE(QString::fromUtf8(readable).toUtf8(), readable);
         const auto offsets = readFile(base + ".meta");
         const auto firstTimestamp = QDateTime::fromString(QString::fromUtf8(offsets.split(' ').first()), Qt::ISODateWithMs);
@@ -688,7 +808,7 @@ private slots:
     }
     void textOffsetsAndSessionRetentionAreBounded() {
         ArtifactDirectory d;
-        Profile p; p.logging = true; p.textLog = true; p.timestampMetadata = true;
+        Profile p; p.logMode = "raw"; p.logging = true; p.logMode = "both"; p.logExtension = ".text"; p.timestampMetadata = true;
         p.logBytes = 4; p.logRetention = 2;
         RotatingSink sink(p, d.file("rotating"));
         const auto time = QDateTime::fromString("2026-01-02T03:04:05.006Z", Qt::ISODateWithMs);
@@ -722,7 +842,7 @@ private slots:
         auto display = std::make_shared<DisplayBuffer>();
         auto *fake = new FakeSerial; fake->devices = {{"A", "", "", -1, -1}};
         SessionWorker worker(display, fake);
-        Profile p; p.port = "A"; p.logging = true; p.timestampMetadata = true;
+        Profile p; p.logMode = "raw"; p.port = "A"; p.logging = true; p.timestampMetadata = true;
         worker.configure(p, d.path); worker.resume(); worker.poll();
         const auto raw = QByteArray::fromHex("001b5b33316dff0d0ae282ac");
         fake->inject(raw); worker.shutdown();

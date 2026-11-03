@@ -55,22 +55,25 @@ QString Utf8Visible::feed(const QByteArray &bytes, bool finish) {
 Terminal::Terminal(int rows, int columns)
     : maxRows(std::clamp(rows, 1, 10000)), maxColumns(std::clamp(columns, 1, 16384)) {
     lines.append(QVector<Cell>{});
+    receivedTimes << QDateTime{};
 }
 void Terminal::clear() {
     lines = {QVector<Cell>{}}; row = column = 0; color = -1; bold = false;
+    receivedTimes = {QDateTime{}};
     parse = Text; sequence.clear(); decoder = Utf8Visible{};
 }
 void Terminal::setLimits(int rows, int columns) {
     maxRows = std::clamp(rows, 1, 10000);
     maxColumns = std::clamp(columns, 1, 16384);
     const int removed = qMax(0, int(lines.size()) - maxRows);
-    if (removed > 0) lines.remove(0, removed);
+    if (removed > 0) { lines.remove(0, removed); receivedTimes.remove(0, removed); }
     row = qMax(0, row - removed); column = qMin(column, maxColumns);
     for (auto &line : lines)
         if (line.size() > maxColumns) line.resize(maxColumns);
     boundCells();
 }
-void Terminal::feed(const QByteArray &bytes) {
+void Terminal::feed(const QByteArray &bytes, const QDateTime &received) {
+    currentReceived = received;
     // Chunk even direct callers so bounds do not depend on the transport's chunk size.
     for (qsizetype start = 0; start < bytes.size(); start += 16384) {
         consume(decoder.feed(bytes.mid(start, 16384)));
@@ -78,6 +81,7 @@ void Terminal::feed(const QByteArray &bytes) {
     }
 }
 void Terminal::localEcho(const QByteArray &bytes) {
+    currentReceived = QDateTime::currentDateTimeUtc();
     // Local TX must not complete a partially received UTF-8 character or ANSI sequence.
     const auto savedParse = parse;
     const auto savedSequence = sequence;
@@ -100,17 +104,21 @@ void Terminal::finish() {
 }
 void Terminal::ensureRow(int target) {
     target = std::clamp(target, 0, maxRows - 1);
-    while (lines.size() <= target) lines.append(QVector<Cell>{});
+    while (lines.size() <= target) { lines.append(QVector<Cell>{}); receivedTimes << QDateTime{}; }
     row = target;
 }
 void Terminal::newLine() {
     column = 0;
-    if (row + 1 >= maxRows) { lines.removeFirst(); lines.append(QVector<Cell>{}); row = maxRows - 1; }
+    if (row + 1 >= maxRows) {
+        lines.removeFirst(); receivedTimes.removeFirst();
+        lines.append(QVector<Cell>{}); receivedTimes << QDateTime{}; row = maxRows - 1;
+    }
     else ensureRow(row + 1);
 }
 void Terminal::put(QChar ch) {
     if (column >= maxColumns) newLine();
     auto &line = lines[row];
+    if (line.isEmpty() || !receivedTimes[row].isValid()) receivedTimes[row] = currentReceived;
     while (line.size() <= column) line.append(Cell{});
     line[column++] = {ch, color, bold};
 }
@@ -178,9 +186,12 @@ void Terminal::csi(QChar command) {
         if (n == 0) lines[row].resize(std::min(column, int(lines[row].size())));
         else if (n == 1) {
             for (int i = 0; i <= column && i < lines[row].size(); ++i) lines[row][i] = Cell{};
-        } else if (n == 2) lines[row].clear();
+        } else if (n == 2) { lines[row].clear(); receivedTimes[row] = {}; }
     } else if (command == 'J') {
-        if (n == 2 || n == 3) { for (auto &line : lines) line.clear(); }
+        if (n == 2 || n == 3) {
+            for (auto &line : lines) line.clear();
+            for (auto &time : receivedTimes) time = {};
+        }
         else if (n == 0) {
             lines[row].resize(std::min(column, int(lines[row].size())));
             for (int i = row + 1; i < lines.size(); ++i) lines[i].clear();
@@ -209,18 +220,25 @@ void Terminal::boundCells() {
     qsizetype cells = cellCount();
     while (cells > 1048576 && lines.size() > 1) {
         if (row > 0) {
-            cells -= lines.first().size(); lines.removeFirst(); --row;
+            cells -= lines.first().size(); lines.removeFirst(); receivedTimes.removeFirst(); --row;
         } else {
-            cells -= lines.last().size(); lines.removeLast();
+            cells -= lines.last().size(); lines.removeLast(); receivedTimes.removeLast();
         }
     }
 }
-QString Terminal::html() const {
+QString Terminal::timestampPrefix(int line, bool milliseconds) const {
+    if (line < 0 || line >= receivedTimes.size() || !receivedTimes[line].isValid()
+        || lines[line].isEmpty()) return {};
+    return "[" + receivedTimes[line].toUTC().toString(milliseconds
+        ? "yyyy-MM-dd HH:mm:ss.zzz" : "yyyy-MM-dd HH:mm:ss") + " UTC] ";
+}
+QString Terminal::html(bool timestamps, bool milliseconds) const {
     static const QStringList colors = {"#777777", "#cd5555", "#55bb55", "#bbbb55",
         "#6699ee", "#bb66bb", "#55bbbb", "#dddddd", "#aaaaaa", "#ff7777", "#77ff77",
         "#ffff77", "#99bbff", "#ff99ff", "#99ffff", "#ffffff"};
     QString out = "<pre style=\"white-space:pre; margin:0;\">";
     for (int r = 0; r < lines.size(); ++r) {
+        if (timestamps) out += timestampPrefix(r, milliseconds).toHtmlEscaped();
         int previousColor = -2; bool previousBold = false;
         bool span = false;
         for (const Cell &cell : lines[r]) {

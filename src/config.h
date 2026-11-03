@@ -16,9 +16,15 @@ struct Profile {
     QString filterText, filterMode = QStringLiteral("text");
     bool filterCase = false, filterHighlight = false;
     int writeTimeoutMs = 2000, retryLimit = 5, terminalRows = 2000, lineColumns = 4096;
-    bool logging = false, timestampMetadata = false, textLog = false;
+    bool logging = false, timestampMetadata = false;
     QString logDirectory = QStringLiteral("logs");
     QString logName = QStringLiteral("{profile}-{date}-{time}-{id}");
+    QString logExtension = QStringLiteral(".log");
+    QString rawLogExtension = QStringLiteral(".raw");
+    QString logMode = QStringLiteral("text");
+    bool rawLogging() const { return logMode == "raw" || logMode == "both"; }
+    bool textLogging() const { return logMode == "text" || logMode == "both"; }
+    bool terminalTimestamp = false, textTimestamp = false, timestampMilliseconds = false;
     int logSeconds = 0, displayQueueBytes = 262144;
     qint64 logBytes = 10485760, logQueueBytes = 4194304;
     int logRetention = 5;

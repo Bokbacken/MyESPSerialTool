@@ -26,9 +26,8 @@ QString logFileStem(const Profile &profile, const QDateTime &started, const QStr
         position = match.capturedEnd();
     }
     result += profile.logName.mid(position);
-    if (!profile.logName.contains("{id}")) result += "-" + id;
     // Keep individual file names below Windows' component limit, including suffixes.
-    if (result.size() > 200) result = result.left(160) + "-" + id;
+    if (result.size() > 200) result = result.left(200);
     return result;
 }
 
@@ -56,10 +55,18 @@ static bool rotateFile(const QString &active, int retention, QString &error) {
 }
 
 RotatingSink::RotatingSink(const Profile &p, const QString &b) : profile(p), base(b) {}
+RotatingSink::~RotatingSink() {
+    raw.close(); metadata.close(); text.close(); session.close();
+}
 bool RotatingSink::begin(const QDateTime &started, QString &error) {
     if (session.isOpen()) return true;
     const auto directory = QFileInfo(base).absolutePath();
     if (!QDir().mkpath(directory)) { error = "Cannot create log directory: " + directory; return false; }
+    lock = std::make_unique<QLockFile>(base + ".lock");
+    if (!lock->tryLock(0)) {
+        error = "Log set is already in use: " + base;
+        return false;
+    }
     session.setFileName(base + ".session");
     sessionStarted = started;
     if (!session.open(QIODevice::WriteOnly | QIODevice::Append)) { error = session.errorString(); return false; }
@@ -67,7 +74,9 @@ bool RotatingSink::begin(const QDateTime &started, QString &error) {
     const auto values = profile.values();
     for (auto it = values.cbegin(); it != values.cend(); ++it) settings[it.key()] = it.value();
     return writeSession(jsonRecord({{"event", "start"}, {"hostUtc", started.toUTC().toString(Qt::ISODateWithMs)},
-        {"profile", profile.name}, {"settings", settings}, {"rawBase", base + ".raw"}}), error);
+        {"profile", profile.name}, {"settings", settings},
+        {"rawBase", profile.rawLogging() ? base + profile.rawLogExtension : QString{}},
+        {"textBase", profile.textLogging() ? base + profile.logExtension : QString{}}}), error);
 }
 bool RotatingSink::writeSession(const QByteArray &record, QString &error) {
     if (session.size() > 0 && session.size() + record.size() > qMax<qint64>(4096, profile.logBytes)) {
@@ -97,7 +106,7 @@ bool RotatingSink::finish(const QString &reason, const QDateTime &time, QString 
     ended = true;
     if (!session.isOpen()) return false;
     QString textError, sessionError;
-    const bool textOk = !profile.textLog || !text.isOpen()
+    const bool textOk = !profile.textLogging() || !text.isOpen()
         || writeText(textDecoder.feed({}, true), time, textError);
     const bool metadataOk = event("end: " + reason, time, sessionError);
     if (!metadataOk) error = sessionError;
@@ -105,30 +114,38 @@ bool RotatingSink::finish(const QString &reason, const QDateTime &time, QString 
     return textOk && metadataOk;
 }
 bool RotatingSink::open(QString &error) {
-    if (raw.isOpen()) return true;
+    if (streamsOpen) return true;
     const QString directory = QFileInfo(base).absolutePath();
     if (!QDir().mkpath(directory)) { error = "Cannot create log directory: " + directory; return false; }
-    raw.setFileName(base + ".raw");
-    if (!raw.open(QIODevice::WriteOnly | QIODevice::Append)) { error = raw.errorString(); return false; }
-    offset = raw.size();
-    if (profile.timestampMetadata) {
+    if (profile.rawLogging()) {
+        raw.setFileName(base + profile.rawLogExtension);
+        if (!raw.open(QIODevice::WriteOnly | QIODevice::Append)) { error = raw.errorString(); return false; }
+        offset = raw.size();
+    }
+    if (profile.timestampMetadata && profile.rawLogging()) {
         metadata.setFileName(base + ".meta");
         if (!metadata.open(QIODevice::WriteOnly | QIODevice::Append)) {
             error = metadata.errorString(); raw.close(); return false;
         }
     }
-    if (profile.textLog) {
-        text.setFileName(base + ".text");
+    if (profile.textLogging()) {
+        text.setFileName(base + profile.logExtension);
         if (!text.open(QIODevice::WriteOnly | QIODevice::Append)) {
             error = text.errorString(); return false;
         }
     }
+    streamsOpen = true;
     return true;
 }
 bool RotatingSink::rotate(QString &error) {
     raw.close(); metadata.close(); text.close();
+    streamsOpen = false;
     // Retention counts completed segments; the active segment is additional.
-    for (const QString &extension : {QString(".raw"), QString(".meta"), QString(".text")})
+    QStringList extensions;
+    if (profile.rawLogging()) extensions << profile.rawLogExtension;
+    if (profile.timestampMetadata && profile.rawLogging()) extensions << ".meta";
+    if (profile.textLogging()) extensions << profile.logExtension;
+    for (const QString &extension : extensions)
         if (!rotateFile(base + extension, profile.logRetention, error)) return false;
     offset = 0; ++segment; return open(error);
 }
@@ -147,17 +164,18 @@ bool RotatingSink::append(const QByteArray &bytes, const QDateTime &received, QS
             segmentStarted = received;
         }
         const qint64 length = qMin<qint64>(bytes.size() - position, profile.logBytes - offset);
-        if (raw.write(bytes.constData() + position, length) != length || !raw.flush()) {
+        if (profile.rawLogging()
+            && (raw.write(bytes.constData() + position, length) != length || !raw.flush())) {
             error = "Raw log write failed: " + raw.errorString(); return false;
         }
-        if (profile.timestampMetadata) {
+        if (profile.timestampMetadata && profile.rawLogging()) {
             const QByteArray record = QString("%1 reception-utc offset=%2 length=%3 segment=%4\n")
                 .arg(received.toUTC().toString(Qt::ISODateWithMs)).arg(offset).arg(length).arg(segment).toUtf8();
             if (metadata.write(record) != record.size() || !metadata.flush()) {
                 error = "Timestamp metadata write failed: " + metadata.errorString(); return false;
             }
         }
-        if (profile.textLog && !writeText(textDecoder.feed(bytes.mid(position, length)), received, error))
+        if (profile.textLogging() && !writeText(textDecoder.feed(bytes.mid(position, length)), received, error))
             return false;
         position += length; offset += length;
     }
@@ -171,8 +189,16 @@ bool RotatingSink::writeText(const QString &decoded, const QDateTime &received, 
             readable += QString("\\x%1").arg(ch.unicode(), 2, 16, QLatin1Char('0')).toUpper().replace("\\X", "\\x");
         else readable += ch;
     }
-    return writeChecked(text, (received.toUTC().toString(Qt::ISODateWithMs)
-        + " reception-utc " + readable + "\n").toUtf8(), error);
+    QString output;
+    for (const QChar ch : readable) {
+        if (textLineStart && profile.textTimestamp) {
+            output += "[" + received.toUTC().toString(profile.timestampMilliseconds
+                ? "yyyy-MM-dd HH:mm:ss.zzz" : "yyyy-MM-dd HH:mm:ss") + " UTC] ";
+        }
+        output += ch;
+        textLineStart = ch == '\n';
+    }
+    return writeChecked(text, output.toUtf8(), error);
 }
 LogWorker::LogWorker(const Profile &p, const QString &b, QObject *parent)
     : QThread(parent), profile(p), base(b) {}
@@ -226,7 +252,7 @@ void LogWorker::run() {
         if (!ok) {
             { QMutexLocker lock(&mutex); failed = true; queue.clear(); queued = 0;
               endReason = "write failure: " + error; ended = record.received; }
-            emit fault("LOGGING STOPPED: " + error + "; raw capture may be incomplete."); break;
+            emit fault("LOGGING STOPPED: " + error + "; capture may be incomplete."); break;
         }
     }
     QString reason; QDateTime time;

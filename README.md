@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.24.0
+# Serial ESP Helper — 0.25.0
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,8 +31,11 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.24.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.25.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
+   Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
+   Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
+   och guiden. Annars uppdaterar du hela paketet utan att skriva över INI.
 3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
    uppdateras automatiskt, men portfältet är redigerbart så att en frånkopplad
@@ -84,7 +87,8 @@ Välj först den officiella, separat installerade `esptool.exe` i
 **Settings… → Connection → Official esptool executable path**. Verktyget
 buntas inte med appen. **ESP diagnostics…** kontrollerar verktygets version
 innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behålla
-sökvägen.
+sökvägen. Diagnostikvyn har också **Save profile to INI (including esptool path)**;
+en ändrad sökväg märks **NOT saved** tills du sparar.
 
 Diagnostikfönstret kan visa chip-/revisions- och flash-ID-information, läsa
 ESP-IDF:s partitionstabell från adressen i **Explicit partition table address**
@@ -157,7 +161,7 @@ och intervall utanför angiven kapacitet avvisas. Filer är begränsade till 1 G
 ny förhandsgranskning. Manifestets flashläge/frekvens och övriga skrivargument
 används inte och verifieras inte som en komplett framtida skrivkonfiguration.
 
-**WRITE BLOCKED är avsiktligt:** 0.24.0 kan varken flasha, radera eller ändra
+**WRITE BLOCKED är avsiktligt:** 0.25.0 kan varken flasha, radera eller ändra
 OTA-startval. Verifierad enhetsidentitet/chip/revision, säkerhetsstatus,
 bootloaderkompatibilitet, verkligt körande app och säker rollback-hantering
 återstår innan inaktiv partitionsskrivning och startväxling kan erbjudas.
@@ -170,34 +174,62 @@ bakgrunden. `example.ini` dokumenterar profilnycklar och standardvärden.
 
 **Logging settings…** öppnar direkt loggningsfliken i **Settings…**. Dialogen
 kan öppnas även under pågående anslutning. **Cancel** ändrar ingenting;
-**OK** pausar sessionen och tillämpar inställningarna. Klicka därefter
-**Connect / Resume** och **Save profile** om ändringarna ska finnas kvar nästa gång.
+**Apply to session (not saved)** tillämpar ändringarna utan att skriva INI.
+Varje flik har **Save profile to INI (all tabs)**, som sparar samtliga flikar
+och tillämpar dem. Båda pausar sessionen; klicka **Connect / Resume** efteråt.
 
-Aktivera **Exact raw receive logging** för att spara trafiken. Standard är av;
+**PROFILE** markerar inställningar för den namngivna profilen: inklusive
+esptool-sökväg, loggning och terminalval. De sparas i `[profile:namn]`.
+**GLOBAL** markerar INI-filens sökväg, som delas av sessionsfönstren.
+**SESSION ONLY** markerar sådant som inte sparas: anslutningstillstånd,
+terminalbuffert, sändhistorik, lästa partitioner/OTA-metadata och flashplaner.
+Sparande ändrar inte andra redan öppna sessioner; nya/laddade profiler använder
+det sparade innehållet. Behåll rätt INI-fil vid uppackning av ett nytt bygge.
+
+Aktivera **Receive logging enabled** för att spara trafiken. Standard är av;
 statusfältet ovanför terminalen visar tydligt om trafikloggning är av, väntar
 eller är på och visar filens fullständiga sökväg. **Open log folder** öppnar
-loggmappen. En `.raw`-fil skapas när de första mottagna byten skrivs.
+loggmappen. Loggfiler skapas när de första mottagna byten skrivs.
 Loggningen avser mottagna data, inte skickade kommandon.
 
 På loggningsfliken finns följande val:
 
+- **Log format**: `text` (standard), `raw` eller `both`.
+  Text är läsbar UTF-8 där ogiltiga bytes/kontrolltecken visas som `\xNN`;
+  Raw är exakta mottagna bytes, även binära inspelningar; Both sparar båda separat.
+  Gamla INI-filer med `textLog=false/true` och utan `logMode` behåller
+  tidigare läge genom migrering till Raw/Both. Välj Text uttryckligen för att byta.
+- **Text log extension** är `.log` som standard; **Raw exact byte-log extension**
+  är `.raw`. Båda är valbara (punkt och 1–10 bokstäver/siffror).
+  `.meta`, `.session` och `.lock` är reserverade; Text/Raw måste ha olika
+  ändelser i Both-läge. Ändelsen avgör aldrig innehållet, det gör loggformatet.
 - Mapp: absolut sökväg eller relativt INI-filens katalog.
 - Filnamnsmall utan filändelse, exempelvis `{profile}-{date}-{time}`.
   Tillåtna fält är `{profile}`, `{date}`, `{time}`, `{port}`, `{serial}` och
-  `{id}`. Datum/tid är datorns UTC. Ett unikt ID ingår alltid för att
-  samtidiga sessioner inte ska skriva över varandra; osäkra tecken i
+  `{id}`. Datum/tid är datorns UTC. ID ingår **bara** om `{id}` finns i mallen.
+  Vid befintligt/upptaget filnamn får en ny session ett numeriskt suffix,
+  exempelvis `capture-1`, i stället för att skriva över. Aktiva loggserier låses
+  mot samtidig användning. Osäkra tecken i
   profil-/enhetsnamn ersätts med understreck.
 - Maximal råsegmentstorlek i byte och maximal segmenttid i sekunder.
   `0` sekunder stänger av tidsrotation. Den gräns som nås först roterar loggen;
   tidsrotation sker först när nya data tas emot, inte genom tomma timerfiler.
 - Rullande lagring: antal avslutade segment att behålla **utöver den aktiva
-  filen**. Vid rotation blir föregående segment `.raw.1`, därefter `.raw.2`
+  filen**. Vid rotation blir föregående segment exempelvis `.log.1`/`.raw.1`, därefter `.2`
   osv. Äldsta segment raderas. Gränsen gäller samma loggserie, inte andra
   sessioners loggar; metadata/textfiler är separata sidofiler.
 - Ny logg vid återanslutning: av innebär fortsatt skrivning i samma loggserie
   med oförändrade rotationsgränser. På skapar en ny serie med nytt unikt namn.
   Manuell paus/ny Connect eller ändrade inställningar startar alltid en ny serie.
-- Läsbar UTF-8-textlogg, tidsmetadata och storlek på diskens skrivkö.
+- Valbara **host reception UTC timestamps** för Text-loggen och terminalvyn;
+  båda är **av som standard**. Välj **3 decimal places in seconds** för
+  millisekunder, exempelvis `2026-01-02 12:34:56.123 UTC`.
+  Prefixet läggs vid början av en text-/terminalrad och avser mottagna
+  fragment från datorns klocka, inte en garanterad enhetstid.
+  Terminalprefix ändrar inte ANSI-markörpositioner, filtermatchning eller
+  export av hela/filtrerade bufferten. Markeringsexport sparar det markerade
+  visade innehållet, inklusive eventuella prefix.
+- Separat tids-/offsetmetadata för Raw och storlek på diskens skrivkö.
 
 ### Terminalbuffert, filter och export
 
@@ -292,13 +324,13 @@ terminalens avkodade text. Metadata och valbar läsbar textlogg är separata.
 Tidsstämplar avser datorns mottagningstid, inte enhetstid.
 `*.session` innehåller JSON-rader för profil/inställningar, identitet,
 start/slut och avbrott. Valbar `*.meta` kopplar mottagningstid till råoffset;
-valbar `*.text` är läsbar UTF-8 med synliga ogiltiga bytes/kontrolltecken.
-Textloggens tidsstämplar gäller mottagna fragment, inte en påstådd
+Text-loggen (`*.log` som standard) är läsbar UTF-8 med synliga ogiltiga bytes/kontrolltecken.
+Textloggens valbara tidsstämplar gäller mottagna fragment, inte en påstådd
 enhetstidsstämpel för varje komplett rad.
 Rotation och retention kan radera äldre loggsegment enligt INI-inställningarna;
 retention räknar avslutade segment utöver det aktiva.
 Sessionsmetadata skrivs även när råloggning är avstängd. Storleksgränsen
-gäller råsegment; text/offsetlogg roteras tillsammans med råloggen och
+räknar mottagna bytes per segment; valda Text/Raw-/offsetloggar roteras tillsammans och Text
 kan bli större på grund av tidsstämplar och byte-escaping.
 Skrivfel, full disk och kööverflöde visas; kontrollera varningar innan du
 förlitar dig på en logg. Loggar kan innehålla privata data och laddas aldrig
@@ -336,7 +368,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.24.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.25.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

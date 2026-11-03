@@ -48,17 +48,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.24.0");
+        QCoreApplication::setApplicationVersion("0.25.0");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.24.0"));
+        QVERIFY(window.windowTitle().contains("0.25.0"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.24.0"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.25.0"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -499,6 +499,94 @@ private slots:
         QCOMPARE(saved.readAll(), QByteArray("irst\nsec"));
         cursor.clearSelection(); terminal->setTextCursor(cursor);
         QVERIFY(!selection->isEnabled());
+    }
+    void eachSettingsTabSavesAllFieldsAndCancelDoesNotSave() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; QString error;
+        QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
+        SessionWindow window(&config, config.ini.profiles.first());
+        for (int tab = 0; tab < 3; ++tab) {
+            QTimer::singleShot(0, &window, [&, tab] {
+                auto *dialog = window.findChild<QDialog *>();
+                QVERIFY(dialog);
+                QVERIFY(dialog->findChild<QLabel *>("settingsScope")->text().contains("not global"));
+                for (int page = 0; page < 3; ++page)
+                    QVERIFY(dialog->findChild<QPushButton *>(QString("saveSettings%1").arg(page)));
+                dialog->findChild<QTabWidget *>()->setCurrentIndex(tab);
+                dialog->findChild<QLineEdit *>("esptoolPath")->setText("C:/Tools/esptool.exe");
+                dialog->findChild<QLineEdit *>("logExtension")->setText(".bin");
+                dialog->findChild<QLineEdit *>("logName")->setText("capture");
+                auto *mode = dialog->findChild<QComboBox *>("logMode");
+                mode->setCurrentText("text");
+                QVERIFY(!dialog->findChild<QLineEdit *>("rawLogExtension")->isEnabled());
+                QVERIFY(dialog->findChild<QLineEdit *>("logExtension")->isEnabled());
+                mode->setCurrentText("raw");
+                QVERIFY(dialog->findChild<QLineEdit *>("rawLogExtension")->isEnabled());
+                QVERIFY(!dialog->findChild<QLineEdit *>("logExtension")->isEnabled());
+                mode->setCurrentText("both");
+                dialog->findChild<QCheckBox *>("textTimestamp")->setChecked(true);
+                dialog->findChild<QCheckBox *>("terminalTimestamp")->setChecked(true);
+                dialog->findChild<QCheckBox *>("timestampMilliseconds")->setChecked(true);
+                dialog->findChild<QPushButton *>(QString("saveSettings%1").arg(tab))->click();
+            });
+            window.findChild<QPushButton *>("advanced")->click();
+            IniFile restored; QVERIFY(restored.load(config.ini.path, error));
+            const auto &p = restored.profiles.first();
+            QCOMPARE(p.esptoolPath, QString("C:/Tools/esptool.exe"));
+            QCOMPARE(p.logExtension, QString(".bin"));
+            QCOMPARE(p.logName, QString("capture"));
+            QVERIFY(p.textLogging() && p.rawLogging() && p.textTimestamp
+                && p.terminalTimestamp && p.timestampMilliseconds);
+        }
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = window.findChild<QDialog *>();
+            dialog->findChild<QLineEdit *>("esptoolPath")->setText("not-saved.exe");
+            dialog->reject();
+        });
+        window.findChild<QPushButton *>("advanced")->click();
+        QCOMPARE(config.ini.profiles.first().esptoolPath, QString("C:/Tools/esptool.exe"));
+    }
+    void diagnosticsSavePathSurvivesReload() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; QString error;
+        QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
+        SessionWindow window(&config, config.ini.profiles.first());
+        window.findChild<QPushButton *>("esptoolDiagnostics")->click();
+        auto *dialog = window.findChild<EsptoolDialog *>();
+        QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("esptoolPath")->setText("C:/Tools/esptool.exe");
+        QVERIFY(dialog->findChild<QLabel *>("esptoolSettingsScope")->text().contains("NOT saved"));
+        dialog->findChild<QPushButton *>("saveEsptoolSettings")->click();
+        QVERIFY(dialog->findChild<QLabel *>("esptoolSettingsScope")->text().contains("PROFILE saved"));
+        IniFile restored;
+        QVERIFY(restored.load(config.ini.path, error));
+        QCOMPARE(restored.profiles.first().esptoolPath, QString("C:/Tools/esptool.exe"));
+        dialog->close();
+    }
+    void terminalTimestampsPreserveFilteringAndRawLog() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; config.ini.path = directory.filePath("settings.ini");
+        Profile p; p.port = "TEST"; p.terminalTimestamp = p.timestampMilliseconds = true;
+        p.logMode = "raw";
+        p.logDirectory = directory.path(); p.logging = true;
+        config.ini.profiles = {p};
+        auto *serial = new WindowSerial;
+        SessionWindow window(&config, p, serial);
+        window.findChild<QPushButton *>("connectButton")->click();
+        QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"));
+        QMetaObject::invokeMethod(serial, [serial] { emit serial->received("info\nerror temp=23\n"); },
+                                  Qt::QueuedConnection);
+        auto *view = window.findChild<QTextEdit *>("terminal");
+        QTRY_VERIFY(view->toPlainText().contains("UTC] error temp=23"));
+        window.findChild<QLineEdit *>("terminalFilter")->setText("error");
+        QVERIFY(view->toPlainText().contains("UTC] error temp=23"));
+        QVERIFY(!view->toPlainText().contains("info"));
+        window.findChild<QPushButton *>("pauseButton")->click();
+        QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Manually paused"));
+        const auto logs = QDir(directory.path()).entryList({"*.raw"}, QDir::Files);
+        QCOMPARE(logs.size(), 1);
+        QFile file(directory.filePath(logs.first())); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("info\nerror temp=23\n"));
     }
     void expressionViewHighlightExportAndProfile() {
         QTemporaryDir directory; QVERIFY(directory.isValid());

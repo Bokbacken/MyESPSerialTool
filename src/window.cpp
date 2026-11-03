@@ -221,7 +221,13 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     events->setMaximumHeight(110); events->setMaximumBlockCount(200);
     events->setObjectName("events");
     layout->addWidget(events);
-    auto *configLabel = new QLabel("INI: " + config->ini.path);
+    auto *configLabel = new QLabel("GLOBAL INI location: " + config->ini.path);
+    auto *scopeLabel = new QLabel(
+        "PROFILE: Save profile writes this window's settings to INI. "
+        "SESSION ONLY: live connection, terminal buffer and diagnostics snapshots are not saved.");
+    scopeLabel->setWordWrap(true);
+    scopeLabel->setObjectName("profileScope");
+    layout->addWidget(scopeLabel);
     configLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(configLabel);
     auto *versionLabel = new QLabel("Serial ESP Helper — Version " + QCoreApplication::applicationVersion());
@@ -261,7 +267,7 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
         }
     });
     connect(config, &AppConfig::profilesChanged, this, [this, configLabel] {
-        refreshProfiles(); configLabel->setText("INI: " + config->ini.path);
+        refreshProfiles(); configLabel->setText("GLOBAL INI location: " + config->ini.path);
     });
     connect(profiles, &QComboBox::activated, this, [this](int index) {
         if (index >= 0 && index < config->ini.profiles.size()) {
@@ -412,7 +418,13 @@ void SessionWindow::advanced(int tab) {
     QDialog dialog(this); dialog.setWindowTitle("Profile settings");
     dialog.resize(780, 600);
     auto *layout = new QVBoxLayout(&dialog);
-    auto *notice = new QLabel("OK applies settings and pauses this session. Connect / Resume to restart; Save profile to persist.");
+    auto *notice = new QLabel(QString(
+        "PROFILE: all fields on these tabs belong to '%1', not global settings.\n"
+        "Save profile to INI saves ALL tabs and applies them to this session. "
+        "Apply to session does not save. Both pause the session; Connect / Resume restarts it.\n"
+        "GLOBAL: INI location shared by windows: %2. Other open sessions are not changed by saving.")
+        .arg(settings.name, config->ini.path));
+    notice->setObjectName("settingsScope");
     notice->setWordWrap(true); layout->addWidget(notice);
     auto *tabs = new QTabWidget;
     QList<QFormLayout *> forms;
@@ -430,9 +442,11 @@ void SessionWindow::advanced(int tab) {
     auto values = settings.values();
     const QMap<QString, QStringList> options = {
         {"dataBits", {"5", "6", "7", "8"}}, {"parity", {"none", "even", "odd", "space", "mark"}},
-        {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}}};
-    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog",
-                               "autoReconnect", "newLogOnReconnect"};
+        {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}},
+        {"logMode", {"text", "raw", "both"}}};
+    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect",
+                               "autoReconnect", "newLogOnReconnect", "terminalTimestamp",
+                               "textTimestamp", "timestampMilliseconds"};
     const QList<QPair<QString, QString>> fields = {
         {"esptoolPath", "Official esptool executable path (4.x/5.x)"},
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
@@ -445,16 +459,21 @@ void SessionWindow::advanced(int tab) {
         {"terminalRows", "Maximum terminal rows (10–10000)"},
         {"lineColumns", "Wrap at columns (32–16384; total cells capped at 1 Mi)"},
         {"displayQueueBytes", "Display receive queue (1024–67108864 bytes; separate from disk log)"},
-        {"logging", "Exact raw receive logging (session metadata is always recorded)"},
+        {"logging", "Receive logging enabled (session metadata is always recorded)"},
+        {"logMode", "Log format: Text, Raw (exact bytes), or Both (default Text)"},
         {"logDirectory", "Log directory (relative to INI)"},
         {"logName", "Filename template (without extension)"},
-        {"logBytes", "Raw segment size (1–1073741824 bytes)"},
+        {"logExtension", "Text log extension (default .log)"},
+        {"rawLogExtension", "Raw exact byte-log extension (default .raw)"},
+        {"logBytes", "Rotate after received bytes (1–1073741824; text expansion is additional)"},
         {"logSeconds", "Rotate after seconds (0 = size only; max 31536000)"},
         {"logRetention", "Rolling buffer: completed segments kept (1–100), plus active"},
         {"newLogOnReconnect", "New log set on reconnect (off = append to current log)"},
         {"logQueueBytes", "Disk queue byte limit (1–67108864)"},
         {"timestampMetadata", "Separate reception UTC raw-offset metadata (not device time)"},
-        {"textLog", "Optional readable timestamped UTF-8 .text (with raw logging)"}};
+        {"textTimestamp", "Add host reception UTC timestamps to text log (default off)"},
+        {"terminalTimestamp", "Show host reception UTC timestamps in terminal (default off)"},
+        {"timestampMilliseconds", "Timestamp precision: 3 decimal places in seconds (terminal + text log)"}};
     for (const auto &field : fields) {
         QWidget *editor;
         if (options.contains(field.first)) {
@@ -466,14 +485,16 @@ void SessionWindow::advanced(int tab) {
         editor->setObjectName(field.first);
         int group = 0;
         if (field.first.startsWith("log") || field.first == "newLogOnReconnect"
-            || field.first == "timestampMetadata" || field.first == "textLog") group = 1;
+            || field.first == "timestampMetadata" || field.first == "rawLogExtension"
+            || field.first == "textTimestamp" || field.first == "timestampMilliseconds") group = 1;
         if (field.first == "terminalRows" || field.first == "lineColumns"
-            || field.first == "displayQueueBytes") group = 2;
+            || field.first == "displayQueueBytes" || field.first == "terminalTimestamp") group = 2;
         editors[field.first] = editor; forms[group]->addRow(field.second, editor);
     }
     auto *namingHelp = new QLabel("Fields: {date}, {time} (UTC), {profile}, {port}, {serial}, {id}.\n"
-        "Example: {profile}-{date}-{time}. A unique ID is always included to avoid overwriting.\n"
-        "Rotation uses .raw.1, .raw.2, etc.; oldest segments of this log set are deleted.\n"
+        "Example: {profile}-{date}-{time}. ID is included only when {id} is in the template.\n"
+        "Existing/in-use names get a numeric suffix for a new session; existing logs are not overwritten.\n"
+        "Rotation uses the chosen extension plus .1, .2, etc.; oldest segments of this log set are deleted.\n"
         "Size/time limits: whichever comes first. Time rotation happens on the next received bytes.\n"
         "Other log sets are never deleted automatically. Traffic logging captures received bytes only.");
     namingHelp->setWordWrap(true); forms[1]->addRow(namingHelp);
@@ -489,10 +510,21 @@ void SessionWindow::advanced(int tab) {
     auto *rts = qobject_cast<QCheckBox *>(editors["rts"]);
     auto updateRts = [flow, rts] { rts->setEnabled(flow->currentText() != "hardware"); };
     connect(flow, &QComboBox::currentTextChanged, &dialog, updateRts); updateRts();
+    auto *logMode = qobject_cast<QComboBox *>(editors["logMode"]);
+    auto updateLogMode = [&] {
+        const bool text = logMode->currentText() != "raw";
+        const bool raw = logMode->currentText() != "text";
+        editors["logExtension"]->setEnabled(text);
+        editors["textTimestamp"]->setEnabled(text);
+        editors["rawLogExtension"]->setEnabled(raw);
+        editors["timestampMetadata"]->setEnabled(raw);
+    };
+    connect(logMode, &QComboBox::currentTextChanged, &dialog, updateLogMode); updateLogMode();
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Apply to session (not saved)");
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+    auto apply = [&](bool save) {
         for (auto it = editors.cbegin(); it != editors.cend(); ++it) {
             if (auto *combo = qobject_cast<QComboBox *>(it.value())) values[it.key()] = combo->currentText();
             else if (auto *box = qobject_cast<QCheckBox *>(it.value())) values[it.key()] = box->isChecked() ? "true" : "false";
@@ -502,14 +534,24 @@ void SessionWindow::advanced(int tab) {
         if (!Profile::fromValues(settings.name, values, checked, error)) {
             QMessageBox::warning(&dialog, "Invalid settings", error); return;
         }
+        if (save && !config->saveProfile(checked, &dialog)) return;
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
         render(); terminal->finish();
         settings = checked; terminal->setLimits(settings.terminalRows, settings.lineColumns);
         autoReconnect->blockSignals(true); autoReconnect->setChecked(settings.autoReconnect); autoReconnect->blockSignals(false);
         logPath.clear(); logFault.clear(); updateLogStatus();
-        renderView(); addEvent("Settings updated; paused. Connect to apply, Save profile to persist.");
+        renderView(); addEvent(save
+            ? "Profile saved to INI; all settings tabs persisted. Session paused; Connect / Resume."
+            : "Settings applied to this session only (NOT saved). Session paused; Connect / Resume.");
         dialog.accept();
-    });
+    };
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] { apply(false); });
+    for (int i = 0; i < forms.size(); ++i) {
+        auto *save = new QPushButton("Save profile to INI (all tabs)");
+        save->setObjectName(QString("saveSettings%1").arg(i));
+        forms[i]->addRow(save);
+        connect(save, &QPushButton::clicked, &dialog, [&] { apply(true); });
+    }
     dialog.exec();
 }
 void SessionWindow::connectSession() {
@@ -550,6 +592,12 @@ void SessionWindow::showEsptool() {
     connect(dialog, &EsptoolDialog::pathChanged, this, [this](const QString &path) {
         settings.esptoolPath = path;
     });
+    connect(dialog, &EsptoolDialog::saveSettingsRequested, this, [this, dialog] {
+        if (collect() && config->saveProfile(settings, dialog)) {
+            dialog->settingsSaved(config->ini.path);
+            addEvent("Profile including esptool path saved to INI.");
+        }
+    });
     connect(dialog, &QObject::destroyed, this, [this] {
         diagnosticsDialog = nullptr;
         if (!shuttingDown) applyState(state);
@@ -583,10 +631,10 @@ void SessionWindow::sendMessage() {
 }
 void SessionWindow::render() {
     quint64 dropped = 0;
-    const auto bytes = display->take(dropped);
-    if (bytes.isEmpty() && !dropped) return;
+    const auto records = display->takeRecords(dropped);
+    if (records.isEmpty() && !dropped) return;
     const int scroll = view->verticalScrollBar()->value();
-    terminal->feed(bytes);
+    for (const auto &record : records) terminal->feed(record.bytes, record.received);
     if (dropped) {
         terminal->finish();
         terminal->feed(QString("\n[render queue dropped %1 bytes; raw logging is independent]\n").arg(dropped).toUtf8());
@@ -599,21 +647,25 @@ void SessionWindow::renderView() {
     const auto cursor = view->textCursor();
     const int scroll = view->verticalScrollBar()->value();
     view->setExtraSelections({});
-    if (terminalFilter->text().isEmpty() || !filterValid) view->setHtml(terminal->html());
+    if (terminalFilter->text().isEmpty() || !filterValid)
+        view->setHtml(terminal->html(settings.terminalTimestamp, settings.timestampMilliseconds));
     else {
         const auto text = terminal->plainText();
         QStringList selected;
         QVector<bool> matched;
+        int row = 0;
         for (const auto &line : text.split('\n')) {
             const bool match = matchesFilter(line);
             matched << match;
-            if (match) selected << line;
+            if (match) selected << (settings.terminalTimestamp
+                ? terminal->timestampPrefix(row, settings.timestampMilliseconds) + line : line);
+            ++row;
         }
         filterStatus->setText(QString("%1 / %2 buffered rows match. Save profile to keep this filter.")
                               .arg(selected.size()).arg(terminal->rowCount()));
         if (!filterHighlight->isChecked()) view->setPlainText(selected.join('\n'));
         else {
-            view->setHtml(terminal->html());
+            view->setHtml(terminal->html(settings.terminalTimestamp, settings.timestampMilliseconds));
             QList<QTextEdit::ExtraSelection> highlights;
             for (auto block = view->document()->begin(); block.isValid(); block = block.next()) {
                 if (!matched.value(block.blockNumber())) continue;
@@ -697,9 +749,16 @@ void SessionWindow::updateLogStatus() {
         logStatus->setText("Traffic logging OFF. Enable it in Logging settings. Session metadata only.\nFolder: " + directory);
     } else {
         const bool recording = state == SessionState::Connected && !logPath.isEmpty();
-        logStatus->setText(QString("Traffic logging %1 (received bytes). %2\n%3")
+        QString files = "Folder: " + directory;
+        if (!logPath.isEmpty()) {
+            files = "File: " + logPath;
+            if (settings.logMode == "both")
+                files += "\nText: " + logPath.chopped(settings.rawLogExtension.size()) + settings.logExtension;
+        }
+        logStatus->setText(QString("Traffic logging %1 (%2). %3\n%4")
             .arg(recording ? "ON" : "enabled, not currently recording",
-                 logPath.isEmpty() ? "Folder: " + directory : "File: " + logPath,
+                 settings.logMode == "text" ? "Text / UTF-8" : settings.logMode == "raw"
+                    ? "Raw / exact bytes" : "Both / Text + Raw", files,
                  QString("Template: %1 | segment: %2 bytes / %3 s (0 = off) | keep %4 completed + active")
                     .arg(settings.logName).arg(settings.logBytes).arg(settings.logSeconds).arg(settings.logRetention)));
     }

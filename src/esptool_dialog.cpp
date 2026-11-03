@@ -95,6 +95,15 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     tableOffset->setObjectName("partitionTableOffset");
     form->addRow("Explicit partition table address", tableOffset);
     layout->addLayout(form);
+    auto *saveSettings = new QPushButton("Save profile to INI (including esptool path)");
+    saveSettings->setObjectName("saveEsptoolSettings");
+    layout->addWidget(saveSettings);
+    connect(saveSettings, &QPushButton::clicked, this, &EsptoolDialog::saveSettingsRequested);
+    auto *scope = new QLabel("PROFILE: esptool path is saved only with Save profile to INI. "
+        "SESSION ONLY: partition table address, read snapshots and offline plans are not saved.");
+    scope->setObjectName("esptoolSettingsScope");
+    scope->setWordWrap(true);
+    layout->addWidget(scope);
 
     auto *commands = new QHBoxLayout;
     versionButton->setObjectName("checkEsptoolVersion");
@@ -151,6 +160,9 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     connect(pathEdit, &QLineEdit::textChanged, this, [this](const QString &path) {
         profile.esptoolPath = path;
         emit pathChanged(path);
+        findChild<QLabel *>("esptoolSettingsScope")->setText(
+            "PROFILE: esptool path changed (NOT saved). Click Save profile to INI. "
+            "SESSION ONLY: table address, read snapshots and offline plans.");
         updateControls();
     });
     connect(versionButton, &QPushButton::clicked, this, [this] { begin(Operation::Version); });
@@ -199,6 +211,10 @@ EsptoolDialog::~EsptoolDialog() {
 
 QString EsptoolDialog::configuredPath() const {
     return pathEdit->text().trimmed();
+}
+void EsptoolDialog::settingsSaved(const QString &iniPath) {
+    findChild<QLabel *>("esptoolSettingsScope")->setText("PROFILE saved to " + iniPath
+        + ". SESSION ONLY: table address, read snapshots and offline plans.");
 }
 
 void EsptoolDialog::begin(Operation requested) {

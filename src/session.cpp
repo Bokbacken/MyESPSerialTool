@@ -68,23 +68,34 @@ QString stateName(SessionState state) {
     }
     return {};
 }
-void DisplayBuffer::append(const QByteArray &bytes) {
+void DisplayBuffer::append(const QByteArray &bytes, const QDateTime &received) {
     QMutexLocker lock(&mutex);
-    const qsizetype room = limit - buffer.size();
-    buffer += bytes.left(room);
-    dropped += bytes.size() - qMin(bytes.size(), room);
+    const qsizetype accepted = records.size() < 4096 ? qMin(bytes.size(), limit - bufferedBytes) : 0;
+    if (accepted > 0) records << Record{bytes.left(accepted), received};
+    bufferedBytes += accepted;
+    dropped += bytes.size() - accepted;
 }
 void DisplayBuffer::setLimit(qsizetype bytes) {
     QMutexLocker lock(&mutex);
     limit = bytes;
-    if (buffer.size() > limit) {
-        dropped += buffer.size() - limit;
-        buffer.truncate(limit);
+    while (bufferedBytes > limit && !records.isEmpty()) {
+        auto &last = records.last();
+        const qsizetype removed = qMin(last.bytes.size(), bufferedBytes - limit);
+        last.bytes.chop(removed);
+        bufferedBytes -= removed;
+        dropped += removed;
+        if (last.bytes.isEmpty()) records.removeLast();
     }
 }
 QByteArray DisplayBuffer::take(quint64 &droppedBytes) {
+    QByteArray result;
+    for (const auto &record : takeRecords(droppedBytes)) result += record.bytes;
+    return result;
+}
+QVector<DisplayBuffer::Record> DisplayBuffer::takeRecords(quint64 &droppedBytes) {
     QMutexLocker lock(&mutex);
-    QByteArray result; result.swap(buffer);
+    QVector<Record> result; result.swap(records);
+    bufferedBytes = 0;
     droppedBytes = dropped; dropped = 0; return result;
 }
 SessionWorker::SessionWorker(std::shared_ptr<DisplayBuffer> d, SerialTransport *t, QObject *parent)
@@ -113,7 +124,7 @@ void SessionWorker::initialize() {
         if (bytes.isEmpty()) return;
         const auto received = QDateTime::currentDateTimeUtc();
         if (logger && settings.logging) logger->enqueue(bytes, received);
-        if (display) display->append(bytes);
+        if (display) display->append(bytes, received);
     });
 }
 void SessionWorker::transition(SessionState state) {
@@ -220,16 +231,27 @@ void SessionWorker::stopLog(const QString &reason) {
 }
 void SessionWorker::startLog() {
     if (logger) return;
-    const QString base = QDir(logDirectory).filePath(logFileStem(settings,
+    const QString requested = QDir(logDirectory).filePath(logFileStem(settings,
         QDateTime::currentDateTimeUtc(), QUuid::createUuid().toString(QUuid::Id128)));
+    QString base = requested;
+    int suffix = 0;
+    while (QFileInfo::exists(base + ".session") || QFileInfo::exists(base + settings.logExtension)
+        || QFileInfo::exists(base + ".meta") || QFileInfo::exists(base + settings.rawLogExtension)
+        || QFileInfo::exists(base + ".lock")) {
+        base = requested + "-" + QString::number(++suffix);
+    }
     logger = new LogWorker(settings, base, this);
     connect(logger, &LogWorker::fault, this, &SessionWorker::problem);
     logger->start();
-    emit logFileChanged(settings.logging ? base + ".raw" : QString{});
+    emit logFileChanged(settings.logging
+        ? base + (settings.rawLogging() ? settings.rawLogExtension : settings.logExtension) : QString{});
     emit problem("Session metadata: " + base + ".session");
-    if (settings.logging) emit problem("Raw capture: " + base + ".raw"
-        + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : "")
-        + (settings.textLog ? " (readable reception-UTC UTF-8 in .text)" : ""));
+    if (settings.logging) {
+        if (settings.rawLogging()) emit problem("Raw exact byte capture: " + base + settings.rawLogExtension
+            + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : ""));
+        if (settings.textLogging()) emit problem("Readable UTF-8 text capture: " + base + settings.logExtension
+            + (settings.textTimestamp ? " (host reception UTC timestamps)" : " (timestamps off)"));
+    }
 }
 void SessionWorker::poll() {
     initialize();
