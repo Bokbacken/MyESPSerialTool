@@ -1,11 +1,11 @@
-Serial ESP Helper — leveransplan, version 0.25.0
+Serial ESP Helper — leveransplan, version 0.25.1
 ================================================
 
 AVGRÄNSNING
 Detta repo började med enbart README och innehåller ingen ESP32-firmware,
 äventyrsmotor eller karaokeuppspelare. Första leveransen är därför en
 komplett vertikal etapp 1 för Windows-terminalen, inte hela önskelistan.
-Version 0.25.0 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
+Version 0.25.1 gäller denna app; äldre önskemålet 0.19.3 ersätts inte i något
 annat projekt.
 
 SÅ HÅLLER VI BACKLOGGEN AKTUELL
@@ -44,6 +44,10 @@ IMPLEMENTERADE FÖRBÄTTRINGAR
     hela sekunder eller exakt tre decimaler. Raw-bytes förblir oförändrade.
 [x] Spara-knapp på varje inställningsflik och i esptool-vyn, separat osparad Apply.
     Profil/global/session-only märks; sparad esptool-sökväg och loggval reload-testas.
+[x] 0.25.1: per-user MSI som komplement till ZIP, LocalAppData-installation,
+    startmenygenväg och Dokument/SerialESPHelper/Logs för nya installerade profiler.
+    Appen äger INI/loggar; MSI-uppgradering/avinstallation ska bevara dem.
+    CI testar installation, första start, uppgradering och avinstallation.
 [x] Råsegmentrotation på storlek/tid och rullande lagring per loggserie.
 [x] Val mellan ny loggserie och fortsatt logg vid automatisk återanslutning.
 [x] Inställningar för terminalrader, kolumner och separat mottagningskö.
@@ -81,6 +85,8 @@ Kvarvarande verkliga tester (ej påstått utförda):
     om körande partition; testa NEW/PENDING_VERIFY och rollback efter reset.
 [ ] Verifiera 0.25.0 på Windows: spara från alla flikar/diagnostik, behåll INI
     mellan byggen, Text/Raw/Both, ändelser, UTC-millisekunder och samtidiga namn.
+[ ] Verifiera MSI på verklig Windows 10/11-standardanvändare utan admin:
+    installation, uppgradering, avinstallation och omdirigerad Dokument-mapp.
 
 ETAPP 2 — avancerade filter och export (delvis implementerad)
 [x] Enkel textfiltrering och UTF-8-export av buffert/markering/träffrader.

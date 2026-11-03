@@ -5,11 +5,12 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QTimer>
+#include <QStandardPaths>
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Serial ESP Helper");
-    QCoreApplication::setApplicationVersion("0.25.0");
+    QCoreApplication::setApplicationVersion("0.25.1");
     qRegisterMetaType<Profile>();
     qRegisterMetaType<SessionState>();
     QCommandLineParser parser;
@@ -29,6 +30,17 @@ int main(int argc, char **argv) {
     } else if (!config.ini.load(path, error)) {
         QMessageBox::critical(nullptr, "Invalid INI — no connection started", path + "\n" + error);
         return 2;
+    }
+    if (!smoke && !parser.isSet("config") && !QFileInfo::exists(path)
+        && QFileInfo::exists(QDir(QCoreApplication::applicationDirPath()).filePath("installed.marker"))) {
+        const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        if (documents.isEmpty()) {
+            QMessageBox::critical(nullptr, "Documents folder unavailable",
+                "Cannot determine the user's Documents folder. Select an explicit --config INI path.");
+            return 2;
+        }
+        for (auto &profile : config.ini.profiles)
+            profile.logDirectory = QDir(documents).filePath("SerialESPHelper/Logs");
     }
     if (!smoke && !QFileInfo::exists(path) && !config.ini.save(error)) {
         QMessageBox::warning(nullptr, "Default INI is not writable",

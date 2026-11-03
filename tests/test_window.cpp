@@ -48,17 +48,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.25.0");
+        QCoreApplication::setApplicationVersion("0.25.1");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.25.0"));
+        QVERIFY(window.windowTitle().contains("0.25.1"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.25.0"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.25.1"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";

@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.25.0
+# Serial ESP Helper — 0.25.1
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.25.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.25.1 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
    Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
    Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
@@ -80,6 +80,29 @@ för att behålla ändringen. Saknad eller tvetydig identitet leder inte till at
 programmet väljer en annan enhet godtyckligt. Utan unikt serienummer används
 portnamnet, vilket inte garanterar fysisk identitet om operativsystemet byter
 COM-nummer.
+
+### Installation med MSI (aktuell användare)
+
+Som alternativ till ZIP finns `SerialESPHelper-windows-x64.msi`.
+Stäng programmet och kör MSI-filen. Den installerar för **bara aktuell
+användare**, utan begäran om administratörsrättigheter, under
+`%LOCALAPPDATA%\Programs\SerialESPHelper` och skapar en startmenygenväg.
+USB-drivrutiner ingår inte och kan fortfarande kräva separat installation.
+Paketet är osignerat; Windows kan visa en varning om okänd utgivare.
+
+Vid första normala start skapar appen sin INI bredvid den installerade EXE:n.
+Nya installerade profiler använder **Dokument\SerialESPHelper\Logs** för
+loggar, via Windows användarspecifika Dokument-mapp (även om den är omdirigerad).
+ZIP-versionen behåller `logs` relativt INI-filens katalog.
+Sparade sökvägar i en befintlig INI ändras aldrig vid uppgradering.
+För att flytta från ZIP: stäng programmet och kopiera din befintliga INI
+till installationsmappen före första start, eller använd `--config`.
+
+MSI äger inte INI, backup eller loggar: de **bevaras vid uppgradering och
+avinstallation**. Ett senare MSI-paket uppgraderar den befintliga
+installationen; nedgradering blockeras. Avinstallera via Windows appar.
+Kvarvarande INI/loggar kan tas bort manuellt om du vill.
+MSI och ZIP innehåller samma app, DLL:er, licenser och motsvarande Qt-källor.
 
 ### ESP-diagnostik med esptool
 
@@ -161,7 +184,7 @@ och intervall utanför angiven kapacitet avvisas. Filer är begränsade till 1 G
 ny förhandsgranskning. Manifestets flashläge/frekvens och övriga skrivargument
 används inte och verifieras inte som en komplett framtida skrivkonfiguration.
 
-**WRITE BLOCKED är avsiktligt:** 0.25.0 kan varken flasha, radera eller ändra
+**WRITE BLOCKED är avsiktligt:** 0.25.1 kan varken flasha, radera eller ändra
 OTA-startval. Verifierad enhetsidentitet/chip/revision, säkerhetsstatus,
 bootloaderkompatibilitet, verkligt körande app och säker rollback-hantering
 återstår innan inaktiv partitionsskrivning och startväxling kan erbjudas.
@@ -368,7 +391,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.25.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.25.1`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.
