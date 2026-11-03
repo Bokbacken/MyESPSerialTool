@@ -77,7 +77,7 @@ private slots:
             {"flowControl", "xon"}, {"writeTimeoutMs", "0"}, {"retryLimit", "-1"},
             {"terminalRows", "10001"}, {"lineColumns", "999999"}, {"logBytes", "0"},
             {"logQueueBytes", "999999999"}, {"logRetention", "0"}, {"newline", "maybe"},
-            {"vid", "65536"}, {"logDirectory", ""}, {"port", "COM1\nx=y"}};
+            {"vid", "65536"}, {"port", "COM1\nx=y"}};
         for (auto it = invalid.cbegin(); it != invalid.cend(); ++it) {
             Profile out; QVERIFY2(!Profile::fromValues("ESP", {{it.key(), it.value()}}, out, error),
                                  qPrintable(it.key()));
@@ -360,6 +360,63 @@ private slots:
         ini.profiles[0].baud = 0;
         QVERIFY(!ini.save(error)); QCOMPARE(readFile(path), before);
     }
+    void globalSettingsInheritAndMigrateOnlyIdenticalLegacyPaths() {
+        ArtifactDirectory d;
+        const auto sharedPath = d.file("shared.ini");
+        const QByteArray shared =
+            "[profile:One]\nlogDirectory=/shared/logs\nesptoolPath=/opt/esptool\n"
+            "[profile:Two]\nlogDirectory=/shared/logs\nesptoolPath=/opt/esptool\n";
+        QVERIFY(writeFile(sharedPath, shared));
+        IniFile ini; QString error;
+        QVERIFY2(ini.load(sharedPath, error), qPrintable(error));
+        QCOMPARE(ini.defaultLogDirectory, QString("/shared/logs"));
+        QCOMPARE(ini.esptoolPath, QString("/opt/esptool"));
+        QVERIFY(ini.profiles[0].logDirectory.isEmpty());
+        QVERIFY(ini.profiles[1].esptoolPath.isEmpty());
+        QVERIFY(ini.save(error));
+        IniFile restored;
+        QVERIFY2(restored.load(sharedPath, error), qPrintable(error));
+        QCOMPARE(restored.defaultLogDirectory, QString("/shared/logs"));
+        QCOMPARE(restored.esptoolPath, QString("/opt/esptool"));
+        QCOMPARE(restored.profiles[0].esptoolPath, QString());
+
+        const auto divergentPath = d.file("divergent.ini");
+        const QByteArray divergent =
+            "[profile:One]\nlogDirectory=/one/logs\nesptoolPath=/one/tool\n"
+            "[profile:Two]\nlogDirectory=/two/logs\nesptoolPath=/two/tool\n";
+        QVERIFY(writeFile(divergentPath, divergent));
+        IniFile divergentIni;
+        QVERIFY2(divergentIni.load(divergentPath, error), qPrintable(error));
+        QCOMPARE(divergentIni.defaultLogDirectory, QString("logs"));
+        QCOMPARE(divergentIni.esptoolPath, QString());
+        QCOMPARE(divergentIni.profiles[0].logDirectory, QString("/one/logs"));
+        QCOMPARE(divergentIni.profiles[1].esptoolPath, QString("/two/tool"));
+    }
+    void globalIniSettingsValidateAndPersistResetPreference() {
+        ArtifactDirectory d;
+        IniFile ini; QString error;
+        QVERIFY(ini.load(d.file("settings.ini"), error));
+        ini.defaultLogDirectory = "/shared/logs";
+        ini.esptoolPath = "/opt/esptool";
+        ini.esptoolDefaultChip = "esp32s3";
+        ini.esptoolBaud = 921600;
+        ini.confirmReset = false;
+        QVERIFY2(ini.save(error), qPrintable(error));
+        IniFile restored;
+        QVERIFY2(restored.load(ini.path, error), qPrintable(error));
+        QCOMPARE(restored.defaultLogDirectory, QString("/shared/logs"));
+        QCOMPARE(restored.esptoolPath, QString("/opt/esptool"));
+        QCOMPARE(restored.esptoolDefaultChip, QString("esp32s3"));
+        QCOMPARE(restored.esptoolBaud, 921600);
+        QVERIFY(!restored.confirmReset);
+        restored.esptoolBaud = 100;
+        const auto beforeInvalidSave = readFile(ini.path);
+        QVERIFY(!restored.save(error));
+        QCOMPARE(readFile(ini.path), beforeInvalidSave);
+        const auto invalid = d.file("invalid-warning.ini");
+        QVERIFY(writeFile(invalid, "[warnings]\nconfirmReset=maybe\n"));
+        QVERIFY(!restored.load(invalid, error));
+    }
     void oversizedSaveCannotCreateAnUnreadableIni() {
         ArtifactDirectory d;
         const auto path = d.file("near-limit.ini");
@@ -377,6 +434,7 @@ private slots:
         QVERIFY(ini.load(d.file("absent.ini"), error)); QCOMPARE(ini.profiles[0].baud, 115200);
         const QList<QByteArray> invalid = {
             "[app]\nformat=2\n", "[profile:ESP]\nbaud=0\n", "[app]\nformat=1\nformat=1\n",
+            "[app]\nformat=1\ndefaultLogDirectory=\n",
             "[profile:ESP]\nreadOnly=TRUE\n", "[app\nformat=1\n", "baud=115200\n",
             "[app]\nformat=1\n[app]\nformat=1\n", QByteArray("[app]\nx=") + char(0xff)};
         for (const auto &bytes : invalid) {

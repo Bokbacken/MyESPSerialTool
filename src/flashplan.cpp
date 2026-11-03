@@ -363,9 +363,10 @@ bool inspect(const QVector<Input> &inputs, const QString &chip, quint64 flashSiz
         parsed.files << entry;
     }
     if (!revalidate(parsed, error)) return false;
-    report << "" << "WRITE BLOCKED: live chip/revision, flash capacity, security/anti-rollback, "
-        "running app and bootloader compatibility have not been verified. "
-        "This preview cannot flash, erase or modify otadata.";
+    report << "" << "This is only a preview, not authorization. A write requires live chip and "
+        "flash-capacity verification plus a mandatory exact-write confirmation. The running app, "
+        "security/anti-rollback state and bootloader compatibility are not verified. "
+        "No OTA boot-selection metadata is written or changed.";
     parsed.report = report.join('\n');
     plan = parsed;
     return true;

@@ -60,7 +60,8 @@ QString commandName(Esptool::Command command, int major) {
 }
 
 EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
-                             ReleasePort release, QWidget *parent)
+                             ReleasePort release, bool requireResetConfirmation,
+                             QWidget *parent)
     : QDialog(parent), profile(p), acquirePort(std::move(acquire)),
       releasePort(std::move(release)), pathEdit(new QLineEdit(p.esptoolPath)),
       portEdit(new QLineEdit(p.port)), baudEdit(new QLineEdit(QString::number(p.baud))),
@@ -76,7 +77,7 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
       versionButton(new QPushButton("Check version")),
       browseButton(new QPushButton("Browse…")),
       otaButton(new QPushButton("Read layout + OTA selection")),
-      planButton(new QPushButton("Offline flash plan...")) {
+      planButton(new QPushButton("Offline flash plan...")), confirmReset(requireResetConfirmation) {
     setWindowTitle("ESP diagnostics — esptool");
     resize(820, 650);
     auto *layout = new QVBoxLayout(this);
@@ -95,11 +96,11 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     tableOffset->setObjectName("partitionTableOffset");
     form->addRow("Explicit partition table address", tableOffset);
     layout->addLayout(form);
-    auto *saveSettings = new QPushButton("Save profile to INI (including esptool path)");
+    auto *saveSettings = new QPushButton("Save global esptool path to INI");
     saveSettings->setObjectName("saveEsptoolSettings");
     layout->addWidget(saveSettings);
     connect(saveSettings, &QPushButton::clicked, this, &EsptoolDialog::saveSettingsRequested);
-    auto *scope = new QLabel("PROFILE: esptool path is saved only with Save profile to INI. "
+    auto *scope = new QLabel("GLOBAL: esptool path is shared by all profiles and saved only when you save. "
         "SESSION ONLY: partition table address, read snapshots and offline plans are not saved.");
     scope->setObjectName("esptoolSettingsScope");
     scope->setWordWrap(true);
@@ -161,7 +162,7 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
         profile.esptoolPath = path;
         emit pathChanged(path);
         findChild<QLabel *>("esptoolSettingsScope")->setText(
-            "PROFILE: esptool path changed (NOT saved). Click Save profile to INI. "
+            "GLOBAL: esptool path changed (NOT saved). Click Save global esptool path to INI. "
             "SESSION ONLY: table address, read snapshots and offline plans.");
         updateControls();
     });
@@ -170,7 +171,8 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     connect(partitionButton, &QPushButton::clicked, this, [this] { begin(Operation::PartitionTable); });
     connect(otaButton, &QPushButton::clicked, this, [this] { begin(Operation::OtaInfo); });
     connect(planButton, &QPushButton::clicked, this, [this] {
-        auto *dialog = new FlashPlanDialog(partitions, this);
+        auto *dialog = new FlashPlanDialog(partitions,
+            [this](const FlashPlan::Plan &plan) { startFlash(plan); }, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
     });
@@ -213,8 +215,14 @@ QString EsptoolDialog::configuredPath() const {
     return pathEdit->text().trimmed();
 }
 void EsptoolDialog::settingsSaved(const QString &iniPath) {
-    findChild<QLabel *>("esptoolSettingsScope")->setText("PROFILE saved to " + iniPath
+    findChild<QLabel *>("esptoolSettingsScope")->setText("GLOBAL esptool path saved to " + iniPath
         + ". SESSION ONLY: table address, read snapshots and offline plans.");
+}
+
+void EsptoolDialog::startFlash(const FlashPlan::Plan &plan) {
+    if (busy) return;
+    flashPlan = plan;
+    begin(Operation::FlashWrite);
 }
 
 void EsptoolDialog::begin(Operation requested) {
@@ -240,16 +248,30 @@ void EsptoolDialog::begin(Operation requested) {
             return;
         }
     }
-    if (requested != Operation::Version) {
+    if (requested == Operation::FlashWrite) {
+        QString error;
+        if (!FlashPlan::revalidate(flashPlan, error)) {
+            QMessageBox::warning(this, "Flash plan expired",
+                "The plan files changed or are unavailable. Inspect the plan again.\n\n" + error);
+            return;
+        }
+        if (!profile.esptoolChip.isEmpty() && profile.esptoolChip != flashPlan.chip) {
+            QMessageBox::warning(this, "Configured chip differs",
+                "The profile's expected chip does not match the explicitly chosen flash-plan chip. "
+                "Flash is blocked.");
+            return;
+        }
+    }
+    if (requested != Operation::Version && confirmReset) {
         QMessageBox confirmation(QMessageBox::Warning, "Diagnostics may restart the ESP",
             "esptool can reset the ESP into its bootloader and restart it afterwards. "
             "Running firmware and serial capture will be interrupted; unsaved runtime state may be lost.\n\n"
             "Bootloader mode cannot be reliably determined from terminal traffic. "
-            "Flash read-only does not mean reset-free.",
+            "Even diagnostic reads can reset the ESP; a flash write also restarts it.",
             QMessageBox::Ok | QMessageBox::Cancel, this);
         confirmation.setObjectName("esptoolResetConfirmation");
         confirmation.setTextFormat(Qt::PlainText);
-        confirmation.button(QMessageBox::Ok)->setText("Continue diagnostics");
+        confirmation.button(QMessageBox::Ok)->setText("Continue operation");
         confirmation.setDefaultButton(QMessageBox::Cancel);
         confirmation.setEscapeButton(QMessageBox::Cancel);
         if (requested == Operation::ChipAndFlash || requested == Operation::OtaInfo)
@@ -349,7 +371,68 @@ void EsptoolDialog::processFinished(int exitCode, QProcess::ExitStatus exitStatu
     }
 
     if (!success) {
-        failOperation(QString("esptool command failed (exit code %1).").arg(exitCode));
+        if (operation == Operation::FlashWrite) {
+            if (totalWrites == 0) {
+                failOperation(QString("Flash preflight failed before any write (exit code %1). "
+                                      "Device flash contents were not modified.")
+                    .arg(exitCode));
+            } else {
+                failOperation(QString("FLASH COMMAND FAILED (exit code %1). %2 of %3 file inputs "
+                    "are confirmed complete; the command may have partially modified flash. "
+                    "Do not assume the device is bootable.")
+                    .arg(exitCode).arg(completedWrites).arg(totalWrites));
+            }
+        } else {
+            failOperation(QString("esptool command failed (exit code %1).").arg(exitCode));
+        }
+        return;
+    }
+    if (operation == Operation::FlashWrite) {
+        if (currentCommand == Esptool::Command::ChipId) {
+            QString error;
+            if (!Esptool::parseDetectedChip(QString::fromUtf8(stdoutBytes + '\n' + stderrBytes),
+                                             detectedChip, error)
+                || detectedChip != flashPlan.chip
+                || (!profile.esptoolChip.isEmpty() && detectedChip != profile.esptoolChip)) {
+                failOperation(error.isEmpty()
+                    ? QString("WRONG CHIP: detected %1, plan requires %2. Flash blocked.")
+                        .arg(detectedChip, flashPlan.chip)
+                    : error + " Flash blocked.");
+                return;
+            }
+        } else if (currentCommand == Esptool::Command::FlashId) {
+            QString error;
+            if (!Esptool::parseFlashCapacity(QString::fromUtf8(stdoutBytes + '\n' + stderrBytes),
+                                              detectedFlashSize, error)
+                || detectedFlashSize != flashPlan.flashSize) {
+                failOperation(error.isEmpty()
+                    ? QString("FLASH CAPACITY MISMATCH: detected %1 bytes, plan declares %2 bytes. "
+                              "Flash blocked.")
+                        .arg(detectedFlashSize).arg(flashPlan.flashSize)
+                    : error + " Flash blocked.");
+                return;
+            }
+            if (!authorizeFlash()) {
+                finishOperation("Flash cancelled before any write. Device contents were not changed.");
+                return;
+            }
+            if (!FlashPlan::revalidate(flashPlan, error)) {
+                failOperation("Flash files changed while the final confirmation was open; "
+                              "no writes were started. " + error);
+                return;
+            }
+            steps.clear();
+            const QString sizeOption = version.major >= 5 ? "--flash-size" : "--flash_size";
+            QStringList writeArgs{sizeOption, "detect"};
+            for (const auto &file : flashPlan.files)
+                writeArgs << QString("0x%1").arg(file.input.address, 0, 16) << file.input.path;
+            steps << Step{Esptool::Command::WriteFlash, writeArgs};
+            totalWrites = flashPlan.files.size();
+            completedWrites = 0;
+        } else if (currentCommand == Esptool::Command::WriteFlash) {
+            completedWrites = totalWrites;
+        }
+        runNextStep();
         return;
     }
     if ((operation == Operation::PartitionTable || operation == Operation::OtaInfo) && steps.isEmpty()) {
@@ -425,6 +508,12 @@ void EsptoolDialog::prepareOperation() {
         steps << Step{Esptool::Command::ReadFlash,
             {QString("0x%1").arg(partition.offset, 0, 16),
              QString("0x%1").arg(partition.size, 0, 16), tempFile->fileName()}};
+    } else if (operation == Operation::FlashWrite) {
+        detectedChip.clear();
+        detectedFlashSize = 0;
+        completedWrites = totalWrites = 0;
+        steps << Step{Esptool::Command::ChipId, {}}
+              << Step{Esptool::Command::FlashId, {}};
     }
     runNextStep();
 }
@@ -435,10 +524,59 @@ void EsptoolDialog::runNextStep() {
         return;
     }
     const Step step = steps.takeFirst();
+    currentCommand = step.command;
     const QStringList args = Esptool::arguments(version, portEdit->text(),
         baudEdit->text().toInt(), step.command, step.extra);
     status->setText(QString("Running %1…").arg(commandName(step.command, version.major)));
+    if (operation == Operation::FlashWrite && step.command == Esptool::Command::WriteFlash)
+        status->setText(QString("Writing %1 file(s) in one esptool session…").arg(totalWrites));
     launch(args, false);
+}
+
+bool EsptoolDialog::authorizeFlash() {
+    QString error;
+    if (!FlashPlan::revalidate(flashPlan, error)) {
+        QMessageBox::warning(this, "Flash plan expired",
+            "Files changed during device verification. No writes will be started.\n\n" + error);
+        return false;
+    }
+    bool elevatedRole = false;
+    QStringList roles;
+    for (const auto &file : flashPlan.files) {
+        if (file.input.kind != FlashPlan::Kind::App) {
+            elevatedRole = true;
+            roles << QString("%1 at 0x%2").arg(FlashPlan::kindName(file.input.kind))
+                .arg(file.input.address, 0, 16);
+        }
+    }
+    if (elevatedRole) {
+        QMessageBox warning(QMessageBox::Critical, "High-impact flash role",
+            "This plan includes non-app flash roles:\n" + roles.join('\n')
+                + "\n\nA bootloader, partition table, merged image or opaque data write can "
+                  "make the device unbootable or invalidate existing data.",
+            QMessageBox::Yes | QMessageBox::Cancel, this);
+        warning.setObjectName("flashRoleConfirmation");
+        warning.setTextFormat(Qt::PlainText);
+        warning.button(QMessageBox::Yes)->setText("Continue to final confirmation");
+        warning.setDefaultButton(QMessageBox::Cancel);
+        warning.setEscapeButton(QMessageBox::Cancel);
+        if (warning.exec() != QMessageBox::Yes) return false;
+    }
+    const QString summary = QString(
+        "Detected chip: %1\nDetected flash: %2 bytes\n\n%3\n\n"
+        "This will write exactly the files and addresses shown above. The running app is unknown. "
+        "No OTA boot-selection metadata is written or changed. If interrupted or a later write fails, "
+        "the device may be left partially programmed.")
+        .arg(detectedChip).arg(detectedFlashSize).arg(flashPlan.report);
+    QMessageBox confirmation(QMessageBox::Critical, "Confirm exact flash writes",
+        "FINAL CONFIRMATION — flash contents will be modified.", QMessageBox::Yes | QMessageBox::Cancel, this);
+    confirmation.setObjectName("finalFlashConfirmation");
+    confirmation.setTextFormat(Qt::PlainText);
+    confirmation.setInformativeText(summary);
+    confirmation.button(QMessageBox::Yes)->setText("Write these exact files");
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.setEscapeButton(QMessageBox::Cancel);
+    return confirmation.exec() == QMessageBox::Yes;
 }
 
 void EsptoolDialog::finishOperation(const QString &message) {
@@ -449,7 +587,12 @@ void EsptoolDialog::finishOperation(const QString &message) {
     busy = false;
     progress->setRange(0, 100);
     progress->setValue(0);
-    status->setText(message.isEmpty() ? "Operation finished." : message);
+    status->setText(message.isEmpty()
+        ? (operation == Operation::FlashWrite
+            ? QString("Flash completed: %1 of %2 writes. OTA boot selection unchanged.")
+                .arg(completedWrites).arg(totalWrites)
+            : "Operation finished.")
+        : message);
     tempFile.reset();
     updateControls();
     if (closeAfterFinish) {

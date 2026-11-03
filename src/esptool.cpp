@@ -40,17 +40,72 @@ QStringList arguments(const Version &version, const QString &port, int baud,
         case Command::ChipId: name = "chip-id"; break;
         case Command::FlashId: name = "flash-id"; break;
         case Command::ReadFlash: name = "read-flash"; break;
+        case Command::WriteFlash: name = "write-flash"; break;
         }
     } else {
         switch (command) {
         case Command::ChipId: name = "chip_id"; break;
         case Command::FlashId: name = "flash_id"; break;
         case Command::ReadFlash: name = "read_flash"; break;
+        case Command::WriteFlash: name = "write_flash"; break;
         }
     }
     QStringList result{"--port", port, "--baud", QString::number(baud), name};
     result.append(extra);
     return result;
+}
+
+bool parseDetectedChip(const QString &output, QString &chip, QString &error) {
+    const auto match = QRegularExpression(
+        R"(\bChip is\s+([A-Za-z0-9-]+))", QRegularExpression::CaseInsensitiveOption)
+        .match(output);
+    if (!match.hasMatch()) {
+        error = "Could not identify the connected chip from esptool output.";
+        return false;
+    }
+    const QString normalized = match.captured(1).toLower().remove('-');
+    static const QSet<QString> supported = {
+        "esp32", "esp32s2", "esp32c3", "esp32s3", "esp32c2", "esp32c6",
+        "esp32h2", "esp32p4", "esp32c61", "esp32c5", "esp32h21", "esp32h4", "esp32s31"
+    };
+    if (!supported.contains(normalized)) {
+        error = "Connected chip is not supported for guarded flashing: " + match.captured(1);
+        return false;
+    }
+    chip = normalized;
+    return true;
+}
+
+bool parseFlashCapacity(const QString &output, quint64 &bytes, QString &error) {
+    const auto match = QRegularExpression(
+        R"(Detected flash size:\s*([0-9]+)\s*(bytes?|[KMG]B))",
+        QRegularExpression::CaseInsensitiveOption).match(output);
+    if (!match.hasMatch()) {
+        error = "Could not identify the connected flash capacity from esptool output.";
+        return false;
+    }
+    bool ok = false;
+    quint64 size = match.captured(1).toULongLong(&ok);
+    const QString unit = match.captured(2).toLower();
+    if (!ok) {
+        error = "Invalid detected flash capacity.";
+        return false;
+    }
+    quint64 multiplier = 1;
+    if (unit.startsWith('k')) multiplier = 1024;
+    else if (unit.startsWith('m')) multiplier = 1024 * 1024;
+    else if (unit.startsWith('g')) multiplier = 1024ULL * 1024ULL * 1024ULL;
+    if (size > 0x100000000ULL / multiplier) {
+        error = "Detected flash capacity exceeds the supported address space.";
+        return false;
+    }
+    size *= multiplier;
+    if (size == 0 || size > 0x100000000ULL || size % 4096) {
+        error = "Detected flash capacity is invalid or not sector-aligned.";
+        return false;
+    }
+    bytes = size;
+    return true;
 }
 
 bool parsePartitionTable(const QByteArray &bytes, QVector<Partition> &partitions,

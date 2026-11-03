@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "esptool.h"
+#include "flashplan.h"
 #include <QDialog>
 #include <QProcess>
 #include <QVector>
@@ -24,7 +25,8 @@ public:
     using ReleasePort = std::function<void()>;
 
     EsptoolDialog(const Profile &profile, AcquirePort acquirePort,
-                  ReleasePort releasePort, QWidget *parent = nullptr);
+                  ReleasePort releasePort, bool confirmReset = true,
+                  QWidget *parent = nullptr);
     ~EsptoolDialog() override;
     QString configuredPath() const;
     void settingsSaved(const QString &iniPath);
@@ -36,7 +38,7 @@ signals:
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
-    enum class Operation { Version, ChipAndFlash, PartitionTable, OtaInfo, RawDump, PartitionDump };
+    enum class Operation { Version, ChipAndFlash, PartitionTable, OtaInfo, RawDump, PartitionDump, FlashWrite };
     struct Step {
         Esptool::Command command;
         QStringList extra;
@@ -80,8 +82,17 @@ private:
     bool handlingResult = false;
     bool closeAfterFinish = false;
     bool readingOta = false;
+    bool confirmReset;
+    FlashPlan::Plan flashPlan;
+    Esptool::Command currentCommand = Esptool::Command::ChipId;
+    QString detectedChip;
+    quint64 detectedFlashSize = 0;
+    int completedWrites = 0;
+    int totalWrites = 0;
 
     void begin(Operation requested);
+    void startFlash(const FlashPlan::Plan &plan);
+    bool authorizeFlash();
     void launch(const QStringList &arguments, bool probe);
     void readStdout();
     void readStderr();

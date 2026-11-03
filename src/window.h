@@ -62,6 +62,7 @@ private:
     QString logPath, logFault;
     QList<QWidget *> connectionEditors;
     void loadProfile(const Profile &profile);
+    Profile runtimeProfile() const;
     bool collect();
     void refreshProfiles();
     void refreshPorts();

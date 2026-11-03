@@ -32,6 +32,21 @@ private slots:
                 "--baud", "9600", "chip_id"}));
     }
 
+    void parsesLiveFlashIdentityForGuardedWrites() {
+        QString chip, error;
+        quint64 capacity = 0;
+        QVERIFY(Esptool::parseDetectedChip("Chip is ESP32-S3 (revision v0.2)", chip, error));
+        QCOMPARE(chip, QString("esp32s3"));
+        QVERIFY(!Esptool::parseDetectedChip("Chip is ESP8266", chip, error));
+        QVERIFY(Esptool::parseFlashCapacity("Detected flash size: 4MB", capacity, error));
+        QCOMPARE(capacity, quint64(4 * 1024 * 1024));
+        QVERIFY(Esptool::parseFlashCapacity("Detected flash size: 2097152 bytes", capacity, error));
+        QCOMPARE(capacity, quint64(2097152));
+        QVERIFY(!Esptool::parseFlashCapacity("Detected flash size: unknown", capacity, error));
+        QVERIFY(!Esptool::parseFlashCapacity("Detected flash size: 18446744073709551615 GB",
+                                             capacity, error));
+    }
+
     void parsesEspIdfPartitionTable() {
         QByteArray bytes(96, char(0xff));
         auto *entry = reinterpret_cast<quint8 *>(bytes.data());

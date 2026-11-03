@@ -70,7 +70,7 @@ private slots:
         QCOMPARE(plan.files.first().eraseStart, quint64(0x20000));
         QCOMPARE(plan.files.first().eraseEnd, quint64(0x21000));
         QVERIFY(plan.report.contains("NOT detected") || plan.report.contains("not device-verified"));
-        QVERIFY(plan.report.contains("WRITE BLOCKED"));
+        QVERIFY(plan.report.contains("not authorization"));
         QVERIFY(plan.report.contains("not established as inactive"));
         QVERIFY(FlashPlan::revalidate(plan, error));
         QVERIFY(!FlashPlan::inspect(inputs, "esp32c3", 0x400000, layout(), plan, error));
@@ -108,6 +108,22 @@ private slots:
         QVERIFY(!FlashPlan::inspect({{path, 0x20000, FlashPlan::Kind::App, 0}},
             "esp32s3", 0x400000, layout(), plan, error));
         QVERIFY(error.contains("does not fit"));
+    }
+
+    void explicitOta0AndOta1MappingAcceptsSameAppTwice() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("same-app.bin");
+        QVERIFY(writeFile(path, image()));
+        FlashPlan::Plan plan;
+        QString error;
+        const QVector<FlashPlan::Input> inputs{
+            {path, 0x10000, FlashPlan::Kind::App, 0},
+            {path, 0x20000, FlashPlan::Kind::App, 0}};
+        QVERIFY2(FlashPlan::inspect(inputs, "esp32s3", 0x400000, layout(), plan, error),
+                 qPrintable(error));
+        QCOMPARE(plan.files.size(), 2);
+        QCOMPARE(plan.files[0].input.address, quint64(0x10000));
+        QCOMPARE(plan.files[1].input.address, quint64(0x20000));
     }
 
     void rejectsMissingEmptyUnalignedOutOfBoundsAndOverlappingFiles() {

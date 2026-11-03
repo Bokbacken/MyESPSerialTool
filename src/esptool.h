@@ -14,7 +14,7 @@ struct Version {
     QString text;
 };
 
-enum class Command { ChipId, FlashId, ReadFlash };
+enum class Command { ChipId, FlashId, ReadFlash, WriteFlash };
 
 struct Partition {
     quint8 type = 0;
@@ -42,6 +42,8 @@ bool parseVersion(const QString &output, Version &version, QString &error);
 QStringList versionArguments();
 QStringList arguments(const Version &version, const QString &port, int baud,
                       Command command, const QStringList &extra = {});
+bool parseDetectedChip(const QString &output, QString &chip, QString &error);
+bool parseFlashCapacity(const QString &output, quint64 &bytes, QString &error);
 bool parsePartitionTable(const QByteArray &bytes, QVector<Partition> &partitions,
                          QString &error);
 QString partitionTypeName(quint8 type, quint8 subtype);

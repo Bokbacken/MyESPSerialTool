@@ -16,11 +16,15 @@
 #include <QTextEdit>
 #include <QTextCursor>
 #include <QFileDialog>
+#include <QTableWidget>
 #include <QInputDialog>
 #include <QFile>
 #include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QCryptographicHash>
+#include <QtEndian>
+#include <algorithm>
 
 class WindowSerial : public SerialTransport {
 public:
@@ -32,6 +36,22 @@ public:
     qint64 pendingWrites() const override { return 0; }
     bool opened = false;
 };
+
+static QByteArray sampleEsp32S3App() {
+    QByteArray bytes(24, '\0');
+    bytes[0] = char(0xe9);
+    bytes[1] = 1;
+    bytes[23] = 1;
+    qToLittleEndian<quint16>(9, reinterpret_cast<uchar *>(bytes.data() + 12));
+    QByteArray segmentHeader(8, '\0');
+    qToLittleEndian<quint32>(4, reinterpret_cast<uchar *>(segmentHeader.data() + 4));
+    bytes += segmentHeader + QByteArray::fromHex("01020304");
+    quint8 checksum = 0xef ^ 1 ^ 2 ^ 3 ^ 4;
+    while ((bytes.size() + 1) % 16) bytes += '\0';
+    bytes += char(checksum);
+    bytes += QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+    return bytes;
+}
 #include <QTest>
 
 static void acceptResetWarning(QObject *context) {
@@ -48,17 +68,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.25.1");
+        QCoreApplication::setApplicationVersion("0.26.0");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.25.1"));
+        QVERIFY(window.windowTitle().contains("0.26.0"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.25.1"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.0"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -240,7 +260,7 @@ private slots:
                 QCOMPARE(confirmation->objectName(), QString("esptoolResetConfirmation"));
                 QCOMPARE(confirmation->defaultButton(), confirmation->button(QMessageBox::Cancel));
                 QVERIFY(confirmation->text().contains("unsaved runtime state"));
-                QVERIFY(confirmation->text().contains("reset-free"));
+                QVERIFY(confirmation->text().contains("diagnostic reads can reset"));
                 if (action == "chipFlashInfo")
                     QVERIFY(confirmation->informativeText().contains("two commands"));
                 QCOMPARE(acquired, 0);
@@ -253,6 +273,20 @@ private slots:
             QVERIFY(output->toPlainText().isEmpty());
             QVERIFY(button->isEnabled());
         }
+    }
+    void resetConfirmationCanBeDisabledWithoutChangingOperationBehavior() {
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        int acquired = 0, released = 0;
+        EsptoolDialog dialog(profile, [&acquired](QString &) { ++acquired; return true; },
+                             [&released] { ++released; }, false);
+        auto *status = dialog.findChild<QLabel *>("esptoolStatus");
+        dialog.findChild<QPushButton *>("chipFlashInfo")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("finished"), 5000);
+        QVERIFY(!QApplication::activeModalWidget());
+        QCOMPARE(acquired, 1);
+        QCOMPARE(released, 1);
     }
     void rawDumpConfirmationCancelsBeforeProcessAndAllowsConfirmedRead() {
         QTemporaryDir directory;
@@ -388,7 +422,7 @@ private slots:
         preview->click();
         QVERIFY(report->toPlainText().contains("PLAN REJECTED"));
         plan->findChild<QLineEdit *>("planCapacity")->setText("0x400000");
-        QVERIFY(report->toPlainText().contains("Writes remain blocked"));
+        QVERIFY(report->toPlainText().contains("Inspect the plan again"));
         QVERIFY(!recheck->isEnabled());
         QTemporaryDir directory;
         const QString dataPath = directory.filePath("data.bin");
@@ -406,8 +440,9 @@ private slots:
         });
         plan->findChild<QPushButton *>("addFlashFile")->click();
         preview->click();
-        QVERIFY2(report->toPlainText().contains("WRITE BLOCKED"), qPrintable(report->toPlainText()));
+        QVERIFY2(report->toPlainText().contains("not authorization"), qPrintable(report->toPlainText()));
         QVERIFY(recheck->isEnabled());
+        QVERIFY(plan->findChild<QPushButton *>("writeFlashPlan")->isEnabled());
         recheck->click();
         QVERIFY(report->toPlainText().contains("unchanged"));
         QVERIFY(data.open(QIODevice::WriteOnly));
@@ -434,6 +469,120 @@ private slots:
         QVERIFY(!recheck->isEnabled());
         QCOMPARE(acquired, 0);
         plan->close();
+    }
+    void explicitBothOtaSlotsAreVerifiedAndWrittenWithoutBootSelectionChange() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString argsFile = directory.filePath("flash-args.jsonl");
+        const QString appPath = directory.filePath("firmware.bin");
+        QFile app(appPath);
+        QVERIFY(app.open(QIODevice::WriteOnly));
+        QCOMPARE(app.write(sampleEsp32S3App()), qint64(sampleEsp32S3App().size()));
+        app.close();
+        qputenv("FAKE_ESPTOOL_ARGS_FILE", argsFile.toUtf8());
+        qputenv("FAKE_ESPTOOL_MODE", "ota");
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        int acquired = 0, released = 0;
+        EsptoolDialog diagnostics(profile, [&acquired](QString &) { ++acquired; return true; },
+                                  [&released] { ++released; });
+        auto *status = diagnostics.findChild<QLabel *>("esptoolStatus");
+        acceptResetWarning(&diagnostics);
+        diagnostics.findChild<QPushButton *>("readOtaInfo")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("snapshot read"), 5000);
+        QCOMPARE(acquired, 1);
+        QCOMPARE(released, 1);
+
+        diagnostics.findChild<QPushButton *>("openFlashPlan")->click();
+        auto *planDialog = diagnostics.findChild<FlashPlanDialog *>();
+        QVERIFY(planDialog);
+        planDialog->findChild<QComboBox *>("planChip")
+            ->setCurrentIndex(planDialog->findChild<QComboBox *>("planChip")->findData("esp32s3"));
+        planDialog->findChild<QLineEdit *>("planCapacity")->setText("0x400000");
+        QTimer::singleShot(0, planDialog, [&, planDialog] {
+            auto *file = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+            QVERIFY(file);
+            file->selectFile(appPath);
+            QMetaObject::invokeMethod(file, "accept", Qt::DirectConnection);
+        });
+        planDialog->findChild<QPushButton *>("addFlashFile")->click();
+        auto *table = planDialog->findChild<QTableWidget *>("planInputs");
+        QCOMPARE(table->rowCount(), 1);
+        auto *kind = qobject_cast<QComboBox *>(table->cellWidget(0, 1));
+        QVERIFY(kind);
+        kind->setCurrentIndex(kind->findData(int(FlashPlan::Kind::App)));
+        auto *target = planDialog->findChild<QComboBox *>("planAppTarget");
+        target->setCurrentIndex(target->findData(-2));
+        auto *report = planDialog->findChild<QPlainTextEdit *>("flashPlanReport");
+        planDialog->findChild<QPushButton *>("inspectFlashPlan")->click();
+        QVERIFY2(report->toPlainText().contains("0x10000"), qPrintable(report->toPlainText()));
+        QVERIFY(report->toPlainText().contains("0x20000"));
+
+        QTimer confirmationTimer;
+        confirmationTimer.setInterval(5);
+        bool writeOperationStarted = false;
+        bool sawFinalConfirmation = false;
+        connect(&confirmationTimer, &QTimer::timeout, &diagnostics, [&] {
+            if (status->text().startsWith("Checking esptool") || status->text().startsWith("Running "))
+                writeOperationStarted = true;
+            if (writeOperationStarted
+                && (status->text().startsWith("Flash completed") || status->text().contains("failed"))) {
+                confirmationTimer.stop();
+                return;
+            }
+            auto *message = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!message) return;
+            if (message->objectName() == "esptoolResetConfirmation")
+                message->button(QMessageBox::Ok)->click();
+            else if (message->objectName() == "flashRoleConfirmation")
+                message->button(QMessageBox::Yes)->click();
+            else if (message->objectName() == "finalFlashConfirmation") {
+                sawFinalConfirmation = true;
+                QCOMPARE(message->defaultButton(), message->button(QMessageBox::Cancel));
+                message->button(QMessageBox::Yes)->click();
+            }
+        });
+        confirmationTimer.start();
+        planDialog->findChild<QPushButton *>("writeFlashPlan")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith("Flash completed"), 10000);
+        QVERIFY(sawFinalConfirmation);
+        QCOMPARE(acquired, 2);
+        QCOMPARE(released, 2);
+        QFile recorded(argsFile);
+        QVERIFY(recorded.open(QIODevice::ReadOnly));
+        int writes = 0;
+        bool wroteOta0 = false, wroteOta1 = false;
+        for (const auto &line : recorded.readAll().split('\n')) {
+            const auto args = QJsonDocument::fromJson(line).array();
+            if (!args.contains("write-flash")) continue;
+            ++writes;
+            QVERIFY(args.contains(appPath));
+            QVERIFY(args.contains("--flash-size"));
+            wroteOta0 = wroteOta0 || args.contains("0x10000");
+            wroteOta1 = wroteOta1 || args.contains("0x20000");
+        }
+        QCOMPARE(writes, 1);
+        QVERIFY(wroteOta0 && wroteOta1);
+        QVERIFY(status->text().contains("OTA boot selection unchanged"));
+
+        qputenv("FAKE_ESPTOOL_MODE", "wrong-chip");
+        writeOperationStarted = false;
+        confirmationTimer.start();
+        planDialog->findChild<QPushButton *>("writeFlashPlan")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(status->text().contains("WRONG CHIP"), 10000);
+        confirmationTimer.stop();
+        QCOMPARE(acquired, 3);
+        QCOMPARE(released, 3);
+        QFile noWrongChipWrite(argsFile);
+        QVERIFY(noWrongChipWrite.open(QIODevice::ReadOnly));
+        int writesAfterMismatch = 0;
+        for (const auto &line : noWrongChipWrite.readAll().split('\n'))
+            if (QJsonDocument::fromJson(line).array().contains("write-flash")) ++writesAfterMismatch;
+        QCOMPARE(writesAfterMismatch, 1);
+        planDialog->close();
+        qunsetenv("FAKE_ESPTOOL_MODE");
+        qunsetenv("FAKE_ESPTOOL_ARGS_FILE");
     }
     void loggingSettingsAreVisibleEditableAndPersisted() {
         QTemporaryDir directory;
@@ -509,7 +658,7 @@ private slots:
             QTimer::singleShot(0, &window, [&, tab] {
                 auto *dialog = window.findChild<QDialog *>();
                 QVERIFY(dialog);
-                QVERIFY(dialog->findChild<QLabel *>("settingsScope")->text().contains("not global"));
+                QVERIFY(dialog->findChild<QLabel *>("settingsScope")->text().contains("GLOBAL fields"));
                 for (int page = 0; page < 3; ++page)
                     QVERIFY(dialog->findChild<QPushButton *>(QString("saveSettings%1").arg(page)));
                 dialog->findChild<QTabWidget *>()->setCurrentIndex(tab);
@@ -557,10 +706,10 @@ private slots:
         dialog->findChild<QLineEdit *>("esptoolPath")->setText("C:/Tools/esptool.exe");
         QVERIFY(dialog->findChild<QLabel *>("esptoolSettingsScope")->text().contains("NOT saved"));
         dialog->findChild<QPushButton *>("saveEsptoolSettings")->click();
-        QVERIFY(dialog->findChild<QLabel *>("esptoolSettingsScope")->text().contains("PROFILE saved"));
+        QVERIFY(dialog->findChild<QLabel *>("esptoolSettingsScope")->text().contains("GLOBAL esptool path saved"));
         IniFile restored;
         QVERIFY(restored.load(config.ini.path, error));
-        QCOMPARE(restored.profiles.first().esptoolPath, QString("C:/Tools/esptool.exe"));
+        QCOMPARE(restored.esptoolPath, QString("C:/Tools/esptool.exe"));
         dialog->close();
     }
     void terminalTimestampsPreserveFilteringAndRawLog() {

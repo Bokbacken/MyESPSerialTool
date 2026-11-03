@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.25.1
+# Serial ESP Helper — 0.26.0
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.25.1 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.26.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
    Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
    Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
@@ -107,10 +107,10 @@ MSI och ZIP innehåller samma app, DLL:er, licenser och motsvarande Qt-källor.
 ### ESP-diagnostik med esptool
 
 Välj först den officiella, separat installerade `esptool.exe` i
-**Settings… → Connection → Official esptool executable path**. Verktyget
+**Settings… → Connection → Global esptool executable**. Verktyget
 buntas inte med appen. **ESP diagnostics…** kontrollerar verktygets version
 innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behålla
-sökvägen. Diagnostikvyn har också **Save profile to INI (including esptool path)**;
+sökvägen. Diagnostikvyn har också **Save global esptool path to INI**;
 en ändrad sökväg märks **NOT saved** tills du sparar.
 
 Diagnostikfönstret kan visa chip-/revisions- och flash-ID-information, läsa
@@ -134,11 +134,12 @@ Porten stängs exklusivt innan esptool startas. Efter avslut eller fel återstä
 den tidigare anslutningsavsikten; **Manual pause** under en operation avbryter
 verktyget och hindrar återanslutning. All inmatning skickas som separata
 `QProcess`-argument, aldrig via ett shell. Diagnostikvyn har bara chip-/flash-ID
-och flashläsningskommandon: den kan inte radera eller skriva flash. En rå
+och flashläsningskommandon samt den särskilt granskade flashplanen nedan; det
+finns ingen fristående erase-funktion eller automatisk OTA-startväxling. En rå
 coredump sparas som bytes; avkodning kräver separat matchande ELF och ingår
 inte här.
 
-### OTA-layout och skrivfri flashplan (etapp 4, första delsteget)
+### OTA-layout och kontrollerad flashning (etapp 4)
 
 **Read layout + OTA selection** läser först partitionstabellen och sedan
 de två sektorerna i en entydig, standardiserad `otadata`-partition.
@@ -158,7 +159,7 @@ att skriva över. Uppgifterna är en läst ögonblicksbild, inte kontinuerlig ö
 
 **Offline flash plan...** kan användas helt utan esptool eller ansluten enhet.
 Välj uttryckligen chip och flashkapacitet i byte, till exempel `0x800000`.
-Fyra indataflöden stöds för förhandsgranskning:
+Fyra indataflöden stöds:
 
 - ESP-IDF-byggkatalog: välj dess `flasher_args.json`; relativa filer och
   adresser hämtas från manifestet. Roller hämtas bara från uttryckliga
@@ -166,7 +167,9 @@ Fyra indataflöden stöds för förhandsgranskning:
 - Separata Arduino-/PlatformIO-BIN: lägg till varje fil och välj roll och
   flashadress uttryckligen. Filnamnet avgör aldrig rollen.
 - En app-BIN: välj **App**, ange startadressen och jämför med en inläst
-  app-partition. Det är ingen automatisk uppdatering av inaktiv OTA-slot.
+  app-partition. Välj uttryckligen OTA0, OTA1 eller **båda OTA-slotarna**.
+  "Båda" skriver samma app-BIN en gång till varje explicit OTA-partitionsstart;
+  det gissar inte vilken partition som är inaktiv.
 - Merged/full image: välj **Merged image**, startadress och det explicita
   bildhuvudets offset **inne i filen** (exempelvis `0x1000` om bootloadern
   börjar där). Bara den valda ESP-bilden valideras; alla inbäddade bilder och
@@ -182,12 +185,28 @@ uttryckligen overifierad. Överlapp, fel chip, trasiga bilder, saknade/tomma fil
 och intervall utanför angiven kapacitet avvisas. Filer är begränsade till 1 GiB.
 **Recheck file fingerprints** upptäcker ändrade filer; ändrade indata kräver
 ny förhandsgranskning. Manifestets flashläge/frekvens och övriga skrivargument
-används inte och verifieras inte som en komplett framtida skrivkonfiguration.
+används inte; esptool använder sin automatiska flashstorleksdetektering vid
+skrivning. Manifest och preview ersätter inte en fullständig kontroll av
+enhetens säkerhetskonfiguration, signaturer eller kompatibilitet.
 
-**WRITE BLOCKED är avsiktligt:** 0.25.1 kan varken flasha, radera eller ändra
-OTA-startval. Verifierad enhetsidentitet/chip/revision, säkerhetsstatus,
-bootloaderkompatibilitet, verkligt körande app och säker rollback-hantering
-återstår innan inaktiv partitionsskrivning och startväxling kan erbjudas.
+**Verify device and flash…** öppnar först resetvarningen (om den är aktiverad),
+kontrollerar sedan ansluten chipmodell och flashkapacitet med esptool och
+stoppar skrivningen vid avvikelse eller om kapaciteten inte exakt matchar
+planen. Filerna och SHA-256 kontrolleras igen precis före skrivning. Icke-app-
+roller (bootloader, partitionstabell, merged image och opak data) kräver en
+extra rollvarning. Därefter krävs alltid en separat slutbekräftelse med exakta
+filer, adresser, storlekar och erase-sektorer; den kan inte stängas av i INI.
+Alla valda filer skickas i en `write_flash`-kommandokörning. Vid fel eller
+avbrott rapporteras att fullständigt resultat inte kunde bekräftas; flash kan
+vara delvis ändrat och enheten inte startbar. Kontrollera att ström och kabel
+är stabila.
+
+Flashprogrammering kan starta om enheten och avbryta firmware och serial capture.
+Den ändrar aldrig `otadata` eller OTA-startflaggan automatiskt. Att skriva
+OTA0/OTA1 är inte samma sak som att välja vilken som startar; ändra startval
+separat endast när du uttryckligen vet att det är önskat. Metadata-kandidaten
+är inte bevis på körande app, och app-/bootloaderhuvudvalidering bekräftar inte
+signatur, kryptering, anti-rollback eller säker bootkompatibilitet.
 
 Inställningar ligger i `SerialESPHelper.ini` bredvid programmet. **Save INI as…**
 väljer en annan plats uttryckligen; programmet flyttar inte inställningar i
@@ -201,9 +220,13 @@ kan öppnas även under pågående anslutning. **Cancel** ändrar ingenting;
 Varje flik har **Save profile to INI (all tabs)**, som sparar samtliga flikar
 och tillämpar dem. Båda pausar sessionen; klicka **Connect / Resume** efteråt.
 
-**PROFILE** markerar inställningar för den namngivna profilen: inklusive
-esptool-sökväg, loggning och terminalval. De sparas i `[profile:namn]`.
-**GLOBAL** markerar INI-filens sökväg, som delas av sessionsfönstren.
+**PROFILE** markerar inställningar för den namngivna profilen: serialport,
+eventuella esptool-overrides, loggning och terminalval. De sparas i
+`[profile:namn]`. Tomma esptool-path/chip overrides och baud `0` ärver globalt.
+**GLOBAL** markerar standardloggmapp (`[app]`), esptool-sökväg/chip/baud
+(`[esptool]`) och resetbekräftelse (`[warnings]`), delade av alla profiler.
+Resetvarningen kan stängas av; chipavvikelse blockerar alltid skrivning och
+slutbekräftelsen för flash kan aldrig stängas av.
 **SESSION ONLY** markerar sådant som inte sparas: anslutningstillstånd,
 terminalbuffert, sändhistorik, lästa partitioner/OTA-metadata och flashplaner.
 Sparande ändrar inte andra redan öppna sessioner; nya/laddade profiler använder
@@ -391,7 +414,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.25.1`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.26.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

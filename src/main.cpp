@@ -10,7 +10,7 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Serial ESP Helper");
-    QCoreApplication::setApplicationVersion("0.25.1");
+    QCoreApplication::setApplicationVersion("0.26.0");
     qRegisterMetaType<Profile>();
     qRegisterMetaType<SessionState>();
     QCommandLineParser parser;
@@ -39,8 +39,7 @@ int main(int argc, char **argv) {
                 "Cannot determine the user's Documents folder. Select an explicit --config INI path.");
             return 2;
         }
-        for (auto &profile : config.ini.profiles)
-            profile.logDirectory = QDir(documents).filePath("SerialESPHelper/Logs");
+        config.ini.defaultLogDirectory = QDir(documents).filePath("SerialESPHelper/Logs");
     }
     if (!smoke && !QFileInfo::exists(path) && !config.ini.save(error)) {
         QMessageBox::warning(nullptr, "Default INI is not writable",

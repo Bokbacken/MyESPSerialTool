@@ -6,7 +6,8 @@
 struct Profile {
     QString name = QStringLiteral("ESP");
     QString port, usbSerial;
-    QString esptoolPath;
+    QString esptoolPath, esptoolChip;
+    int esptoolBaud = 0;
     int baud = 115200, dataBits = 8, vid = -1, pid = -1;
     QString parity = QStringLiteral("none"), stopBits = QStringLiteral("1");
     QString flowControl = QStringLiteral("none"), newline = QStringLiteral("lf");
@@ -17,7 +18,7 @@ struct Profile {
     bool filterCase = false, filterHighlight = false;
     int writeTimeoutMs = 2000, retryLimit = 5, terminalRows = 2000, lineColumns = 4096;
     bool logging = false, timestampMetadata = false;
-    QString logDirectory = QStringLiteral("logs");
+    QString logDirectory;
     QString logName = QStringLiteral("{profile}-{date}-{time}-{id}");
     QString logExtension = QStringLiteral(".log");
     QString rawLogExtension = QStringLiteral(".raw");
@@ -38,6 +39,10 @@ class IniFile {
 public:
     QString path;
     QList<Profile> profiles;
+    QString defaultLogDirectory = QStringLiteral("logs");
+    QString esptoolPath, esptoolDefaultChip;
+    int esptoolBaud = 460800;
+    bool confirmReset = true;
     bool load(const QString &file, QString &error);
     bool save(QString &error);
 private:

@@ -14,14 +14,15 @@
 #include <QVBoxLayout>
 #include <memory>
 
-FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, QWidget *parent)
+FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
+                                 FlashCallback flash, QWidget *parent)
     : QDialog(parent) {
-    setWindowTitle("Stage 4 - offline flash plan (writes blocked)");
+    setWindowTitle("Flash plan");
     resize(960, 760);
     auto *layout = new QVBoxLayout(this);
     auto *notice = new QLabel(
-        "Offline preview only. Target chip/flash capacity are explicitly declared, NOT detected. "
-        "No flash writing or OTA boot switching is available in this step.");
+        "The preview checks files and addresses only. The device chip and flash must be verified "
+        "before writing. OTA boot selection is never changed automatically.");
     notice->setWordWrap(true);
     layout->addWidget(notice);
     auto *form = new QFormLayout;
@@ -44,6 +45,7 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
             .arg(partition.label, Esptool::partitionTypeName(partition.type, partition.subtype))
             .arg(partition.offset, 0, 16).arg(partition.size), i);
     }
+    appTarget->addItem("Write the same app BIN to OTA0 and OTA1", -2);
     form->addRow("App partition from read snapshot", appTarget);
     layout->addLayout(form);
 
@@ -60,12 +62,15 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
     auto *remove = new QPushButton("Remove row");
     auto *preview = new QPushButton("Inspect plan (no device access)");
     auto *recheck = new QPushButton("Recheck file fingerprints");
+    auto *write = new QPushButton("Verify device and flash…");
     manifest->setObjectName("loadFlashManifest");
     add->setObjectName("addFlashFile");
     preview->setObjectName("inspectFlashPlan");
     recheck->setObjectName("recheckFlashPlan");
+    write->setObjectName("writeFlashPlan");
     recheck->setEnabled(false);
-    for (auto *button : {manifest, add, remove, preview, recheck}) buttons->addWidget(button);
+    write->setEnabled(false);
+    for (auto *button : {manifest, add, remove, preview, recheck, write}) buttons->addWidget(button);
     layout->addLayout(buttons);
     auto *report = new QPlainTextEdit;
     report->setObjectName("flashPlanReport");
@@ -75,10 +80,11 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
     layout->addWidget(report, 1);
 
     auto plan = std::make_shared<FlashPlan::Plan>();
-    auto invalidate = [plan, report, recheck] {
+    auto invalidate = [plan, report, recheck, write] {
         *plan = {};
         recheck->setEnabled(false);
-        report->setPlainText("Inputs changed. Inspect the plan again. Writes remain blocked.");
+        write->setEnabled(false);
+        report->setPlainText("Inputs changed. Inspect the plan again before any write.");
     };
     auto append = [table, invalidate](const FlashPlan::Input &input) {
         const int row = table->rowCount();
@@ -126,9 +132,10 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
         for (const auto &input : inputs) append(input);
     });
     connect(preview, &QPushButton::clicked, this,
-        [table, chip, capacity, appTarget, partitions, plan, report, recheck] {
+        [table, chip, capacity, appTarget, partitions, plan, report, recheck, write] {
             *plan = {};
             recheck->setEnabled(false);
+            write->setEnabled(false);
             QVector<FlashPlan::Input> inputs;
             quint64 flashSize = 0;
             if (!FlashPlan::parseNumber(capacity->text(), flashSize)) {
@@ -146,6 +153,7 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
                     return;
                 }
                 const int target = appTarget->currentData().toInt();
+                if (input.kind == FlashPlan::Kind::App && target == -2) continue;
                 if (input.kind == FlashPlan::Kind::App && target >= 0) {
                     if (input.address != partitions[target].offset) {
                         report->setPlainText("PLAN REJECTED: app address differs from selected partition. "
@@ -155,6 +163,38 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
                 }
                 inputs << input;
             }
+            if (appTarget->currentData().toInt() == -2) {
+                QVector<Esptool::Partition> ota;
+                for (const auto &partition : partitions)
+                    if (partition.type == 0 && (partition.subtype == 0x10 || partition.subtype == 0x11))
+                        ota << partition;
+                if (ota.size() != 2 || ota[0].subtype == ota[1].subtype) {
+                    report->setPlainText("PLAN REJECTED: the loaded snapshot must contain exactly OTA0 and OTA1.");
+                    return;
+                }
+                const auto appRows = [&] {
+                    QVector<FlashPlan::Input> apps;
+                    for (int row = 0; row < table->rowCount(); ++row) {
+                        auto *kind = qobject_cast<QComboBox *>(table->cellWidget(row, 1));
+                        if (kind && kind->currentData().toInt() == int(FlashPlan::Kind::App)) {
+                            FlashPlan::Input app;
+                            app.path = table->item(row, 0)->text();
+                            app.kind = FlashPlan::Kind::App;
+                            apps << app;
+                        }
+                    }
+                    return apps;
+                }();
+                if (appRows.size() != 1) {
+                    report->setPlainText("PLAN REJECTED: choose exactly one App BIN to map to both OTA slots.");
+                    return;
+                }
+                for (const auto &partition : ota) {
+                    auto app = appRows.first();
+                    app.address = partition.offset;
+                    inputs << app;
+                }
+            }
             QString error;
             if (!FlashPlan::inspect(inputs, chip->currentData().toString(), flashSize, partitions, *plan, error)) {
                 report->setPlainText("PLAN REJECTED: " + error);
@@ -162,15 +202,28 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions, 
             }
             report->setPlainText(plan->report);
             recheck->setEnabled(true);
+            write->setEnabled(true);
         });
-    connect(recheck, &QPushButton::clicked, this, [plan, report, recheck] {
+    connect(recheck, &QPushButton::clicked, this, [plan, report, recheck, write] {
         QString error;
         if (!FlashPlan::revalidate(*plan, error)) {
             report->setPlainText("PLAN INVALIDATED: " + error);
             *plan = {};
             recheck->setEnabled(false);
+            write->setEnabled(false);
         } else {
-            report->setPlainText(plan->report + "\n\nFile fingerprints unchanged at this check. Writes remain blocked.");
+            report->setPlainText(plan->report + "\n\nFile fingerprints unchanged at this check.");
         }
+    });
+    connect(write, &QPushButton::clicked, this, [this, plan, report, recheck, write, flash] {
+        QString error;
+        if (!FlashPlan::revalidate(*plan, error)) {
+            report->setPlainText("PLAN INVALIDATED: " + error);
+            *plan = {};
+            recheck->setEnabled(false);
+            write->setEnabled(false);
+            return;
+        }
+        if (flash) flash(*plan);
     });
 }

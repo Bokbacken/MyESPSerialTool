@@ -1,5 +1,6 @@
 #include "window.h"
 #include "esptool_dialog.h"
+#include "flashplan.h"
 #include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -223,7 +224,8 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     layout->addWidget(events);
     auto *configLabel = new QLabel("GLOBAL INI location: " + config->ini.path);
     auto *scopeLabel = new QLabel(
-        "PROFILE: Save profile writes this window's settings to INI. "
+        "PROFILE: Save profile writes this window's profile settings to INI. "
+        "Global settings on the tabs are shared by all profiles and saved at the same time. "
         "SESSION ONLY: live connection, terminal buffer and diagnostics snapshots are not saved.");
     scopeLabel->setWordWrap(true);
     scopeLabel->setObjectName("profileScope");
@@ -389,6 +391,14 @@ void SessionWindow::loadProfile(const Profile &p) {
             .arg(p.usbSerial).arg(p.vid).arg(p.pid));
     setWindowTitle("Serial ESP Helper " + QCoreApplication::applicationVersion() + " — " + p.name);
 }
+Profile SessionWindow::runtimeProfile() const {
+    Profile resolved = settings;
+    if (resolved.logDirectory.isEmpty()) resolved.logDirectory = config->ini.defaultLogDirectory;
+    if (resolved.esptoolPath.isEmpty()) resolved.esptoolPath = config->ini.esptoolPath;
+    if (resolved.esptoolChip.isEmpty()) resolved.esptoolChip = config->ini.esptoolDefaultChip;
+    if (resolved.esptoolBaud == 0) resolved.esptoolBaud = config->ini.esptoolBaud;
+    return resolved;
+}
 bool SessionWindow::collect() {
     auto values = settings.values();
     values["port"] = port->currentText(); values["baud"] = baud->currentText();
@@ -419,7 +429,8 @@ void SessionWindow::advanced(int tab) {
     dialog.resize(780, 600);
     auto *layout = new QVBoxLayout(&dialog);
     auto *notice = new QLabel(QString(
-        "PROFILE: all fields on these tabs belong to '%1', not global settings.\n"
+        "PROFILE: fields labeled as profile settings belong to '%1'. GLOBAL fields are shared "
+        "by profiles and windows.\n"
         "Save profile to INI saves ALL tabs and applies them to this session. "
         "Apply to session does not save. Both pause the session; Connect / Resume restarts it.\n"
         "GLOBAL: INI location shared by windows: %2. Other open sessions are not changed by saving.")
@@ -439,6 +450,7 @@ void SessionWindow::advanced(int tab) {
     }
     tabs->setCurrentIndex(tab); layout->addWidget(tabs);
     QMap<QString, QWidget *> editors;
+    QMap<QString, QWidget *> globalEditors;
     auto values = settings.values();
     const QMap<QString, QStringList> options = {
         {"dataBits", {"5", "6", "7", "8"}}, {"parity", {"none", "even", "odd", "space", "mark"}},
@@ -448,7 +460,9 @@ void SessionWindow::advanced(int tab) {
                                "autoReconnect", "newLogOnReconnect", "terminalTimestamp",
                                "textTimestamp", "timestampMilliseconds"};
     const QList<QPair<QString, QString>> fields = {
-        {"esptoolPath", "Official esptool executable path (4.x/5.x)"},
+        {"esptoolPath", "esptool executable override (empty = global)"},
+        {"esptoolChip", "Expected chip override (empty = global)"},
+        {"esptoolBaud", "esptool baud override (0 = global)"},
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
         {"autoConnect", "Connect on window open and retry failed initial opens (explicit opt-in)"},
         {"autoReconnect", "Reconnect this session after connection loss"},
@@ -461,7 +475,7 @@ void SessionWindow::advanced(int tab) {
         {"displayQueueBytes", "Display receive queue (1024–67108864 bytes; separate from disk log)"},
         {"logging", "Receive logging enabled (session metadata is always recorded)"},
         {"logMode", "Log format: Text, Raw (exact bytes), or Both (default Text)"},
-        {"logDirectory", "Log directory (relative to INI)"},
+        {"logDirectory", "Log directory override (empty = global default)"},
         {"logName", "Filename template (without extension)"},
         {"logExtension", "Text log extension (default .log)"},
         {"rawLogExtension", "Raw exact byte-log extension (default .raw)"},
@@ -498,6 +512,39 @@ void SessionWindow::advanced(int tab) {
         "Size/time limits: whichever comes first. Time rotation happens on the next received bytes.\n"
         "Other log sets are never deleted automatically. Traffic logging captures received bytes only.");
     namingHelp->setWordWrap(true); forms[1]->addRow(namingHelp);
+    auto addGlobalEditor = [&](int page, const QString &key, const QString &label,
+                               const QString &value, bool checkbox = false) {
+        QWidget *editor = checkbox ? static_cast<QWidget *>(new QCheckBox)
+                                  : static_cast<QWidget *>(new QLineEdit(value));
+        if (checkbox) qobject_cast<QCheckBox *>(editor)->setChecked(value == "true");
+        editor->setObjectName(key);
+        globalEditors[key] = editor;
+        forms[page]->addRow(label, editor);
+    };
+    auto *globalScope = new QLabel("GLOBAL [app]/[esptool]/[warnings], shared by all profiles and windows.");
+    globalScope->setWordWrap(true);
+    forms[0]->addRow(globalScope);
+    addGlobalEditor(0, "globalEsptoolPath", "Global esptool executable",
+                    config->ini.esptoolPath);
+    addGlobalEditor(0, "globalEsptoolChip", "Default expected chip (e.g. esp32s3)",
+                    config->ini.esptoolDefaultChip);
+    addGlobalEditor(0, "globalEsptoolBaud", "Default esptool baud (1200–4000000)",
+                    QString::number(config->ini.esptoolBaud));
+    addGlobalEditor(0, "confirmReset", "Confirm before reset-capable diagnostics",
+                    config->ini.confirmReset ? "true" : "false", true);
+    auto *globalLogScope = new QLabel("GLOBAL default; a nonempty profile log-directory override takes precedence.");
+    globalLogScope->setWordWrap(true);
+    forms[1]->addRow(globalLogScope);
+    addGlobalEditor(1, "defaultLogDirectory", "Global default log directory",
+                    config->ini.defaultLogDirectory);
+    auto *globalBrowse = new QPushButton("Choose global default log folder…");
+    forms[1]->addRow(globalBrowse);
+    connect(globalBrowse, &QPushButton::clicked, &dialog, [&] {
+        auto *directory = qobject_cast<QLineEdit *>(globalEditors["defaultLogDirectory"]);
+        const QString selected = QFileDialog::getExistingDirectory(&dialog, "Global default log folder",
+            QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(directory->text()));
+        if (!selected.isEmpty()) directory->setText(selected);
+    });
     auto *browse = new QPushButton("Choose log folder…");
     forms[1]->addRow(browse);
     connect(browse, &QPushButton::clicked, &dialog, [&] {
@@ -534,7 +581,46 @@ void SessionWindow::advanced(int tab) {
         if (!Profile::fromValues(settings.name, values, checked, error)) {
             QMessageBox::warning(&dialog, "Invalid settings", error); return;
         }
-        if (save && !config->saveProfile(checked, &dialog)) return;
+        auto *globalPath = qobject_cast<QLineEdit *>(globalEditors["globalEsptoolPath"]);
+        auto *globalChip = qobject_cast<QLineEdit *>(globalEditors["globalEsptoolChip"]);
+        auto *globalBaud = qobject_cast<QLineEdit *>(globalEditors["globalEsptoolBaud"]);
+        auto *globalLogs = qobject_cast<QLineEdit *>(globalEditors["defaultLogDirectory"]);
+        quint64 baudValue = 0;
+        if (globalPath->text() != globalPath->text().trimmed()
+            || globalPath->text().contains(QRegularExpression("[\\r\\n\\x00]"))
+            || globalPath->text().size() > 4096
+            || globalPath->text().contains(QRegularExpression("\\s[;#]"))
+            || globalLogs->text().trimmed().isEmpty()
+            || globalLogs->text() != globalLogs->text().trimmed()
+            || globalLogs->text().size() > 4096
+            || globalLogs->text().contains(QRegularExpression("[\\r\\n\\x00]"))
+            || globalLogs->text().contains(QRegularExpression("\\s[;#]"))
+            || (!globalChip->text().trimmed().isEmpty()
+                && !FlashPlan::supportedChips().contains(globalChip->text().trimmed()))
+            || !FlashPlan::parseNumber(globalBaud->text(), baudValue)
+            || baudValue < 1200 || baudValue > 4000000) {
+            QMessageBox::warning(&dialog, "Invalid global settings",
+                "Check the global esptool path, supported default chip, baud (1200–4000000) and log directory.");
+            return;
+        }
+        const auto oldLogDirectory = config->ini.defaultLogDirectory;
+        const auto oldEsptoolPath = config->ini.esptoolPath;
+        const auto oldEsptoolChip = config->ini.esptoolDefaultChip;
+        const auto oldEsptoolBaud = config->ini.esptoolBaud;
+        const auto oldConfirmReset = config->ini.confirmReset;
+        config->ini.defaultLogDirectory = globalLogs->text();
+        config->ini.esptoolPath = globalPath->text();
+        config->ini.esptoolDefaultChip = globalChip->text().trimmed();
+        config->ini.esptoolBaud = int(baudValue);
+        config->ini.confirmReset = qobject_cast<QCheckBox *>(globalEditors["confirmReset"])->isChecked();
+        if (save && !config->saveProfile(checked, &dialog)) {
+            config->ini.defaultLogDirectory = oldLogDirectory;
+            config->ini.esptoolPath = oldEsptoolPath;
+            config->ini.esptoolDefaultChip = oldEsptoolChip;
+            config->ini.esptoolBaud = oldEsptoolBaud;
+            config->ini.confirmReset = oldConfirmReset;
+            return;
+        }
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
         render(); terminal->finish();
         settings = checked; terminal->setLimits(settings.terminalRows, settings.lineColumns);
@@ -562,7 +648,7 @@ void SessionWindow::connectSession() {
     // Lock immediately, before the queued worker request can race another UI edit.
     applyState(SessionState::Waiting);
     terminal->finish();
-    const Profile p = settings;
+    const Profile p = runtimeProfile();
     logPath.clear(); logFault.clear(); updateLogStatus();
     const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(p.logDirectory);
     QMetaObject::invokeMethod(worker, [worker = worker, p, directory] {
@@ -586,16 +672,18 @@ void SessionWindow::showEsptool() {
         QMetaObject::invokeMethod(worker, &SessionWorker::finishTool,
                                   Qt::BlockingQueuedConnection);
     };
-    auto *dialog = new EsptoolDialog(settings, acquire, release, this);
+    auto *dialog = new EsptoolDialog(runtimeProfile(), acquire, release,
+                                     config->ini.confirmReset, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     diagnosticsDialog = dialog;
     connect(dialog, &EsptoolDialog::pathChanged, this, [this](const QString &path) {
-        settings.esptoolPath = path;
+        config->ini.esptoolPath = path;
+        settings.esptoolPath.clear();
     });
     connect(dialog, &EsptoolDialog::saveSettingsRequested, this, [this, dialog] {
         if (collect() && config->saveProfile(settings, dialog)) {
             dialog->settingsSaved(config->ini.path);
-            addEvent("Profile including esptool path saved to INI.");
+            addEvent("Global esptool path and profile settings saved to INI.");
         }
     });
     connect(dialog, &QObject::destroyed, this, [this] {
@@ -744,7 +832,8 @@ void SessionWindow::addEvent(const QString &message) {
 void SessionWindow::updateLogStatus() {
     logStatus->setStyleSheet(logFault.isEmpty() ? "" : "QLabel { color:#d03030; font-weight:bold; }");
     if (!logFault.isEmpty()) { logStatus->setText(logFault); return; }
-    const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(settings.logDirectory);
+    const auto resolved = runtimeProfile();
+    const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(resolved.logDirectory);
     if (!settings.logging) {
         logStatus->setText("Traffic logging OFF. Enable it in Logging settings. Session metadata only.\nFolder: " + directory);
     } else {

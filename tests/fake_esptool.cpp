@@ -35,7 +35,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < args.size(); ++i) {
         if (args[i].startsWith("chip-") || args[i].startsWith("chip_")
             || args[i].startsWith("flash-") || args[i].startsWith("flash_")
-            || args[i].startsWith("read-") || args[i].startsWith("read_")) {
+            || args[i].startsWith("read-") || args[i].startsWith("read_")
+            || args[i].startsWith("write-") || args[i].startsWith("write_")) {
             commandIndex = i;
             break;
         }
@@ -43,13 +44,17 @@ int main(int argc, char **argv) {
     if (commandIndex < 0) return 2;
     const QString command = args[commandIndex];
     if (command == "chip-id") {
-        QTextStream(stdout) << "Chip is ESP32-S3, revision v0.2\n";
+        QTextStream(stdout) << (mode == "wrong-chip"
+            ? "Chip is ESP32-C3, revision v0.2\n"
+            : "Chip is ESP32-S3, revision v0.2\n");
         return 0;
     }
     if (command == "flash-id") {
-        QTextStream(stdout) << "Manufacturer: fake, detected size: 4MB\n";
+        QTextStream(stdout) << "Manufacturer: fake\nDetected flash size: "
+            << (mode == "wrong-flash-size" ? "8MB\n" : "4MB\n");
         return 0;
     }
+    if (command == "write-flash" || command == "write_flash") return 0;
     if (command == "read-flash" && commandIndex + 3 < args.size()) {
         bool ok = false;
         const quint64 size = args[commandIndex + 2].toULongLong(&ok, 0);

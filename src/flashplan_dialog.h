@@ -1,10 +1,14 @@
 #pragma once
 
+#include "flashplan.h"
 #include "esptool.h"
 #include <QDialog>
+#include <functional>
 
 class FlashPlanDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit FlashPlanDialog(const QVector<Esptool::Partition> &partitions, QWidget *parent = nullptr);
+    using FlashCallback = std::function<void(const FlashPlan::Plan &)>;
+    explicit FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
+                             FlashCallback flash, QWidget *parent = nullptr);
 };
