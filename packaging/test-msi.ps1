@@ -48,9 +48,11 @@ try {
     for ($attempt = 0; $attempt -lt 100 -and !(Test-Path $ini); $attempt++) { Start-Sleep -Milliseconds 100 }
     if (!(Test-Path $ini)) { throw 'First launch did not create its user INI.' }
     $content = Get-Content $ini -Raw
-    $expected = 'logDirectory=' + $logs.Replace('\', '/')
-    if (!$content.Replace('\', '/').Contains($expected)) {
-        throw 'Installed log directory does not use the current user Documents folder.'
+    $normalizedContent = $content.Replace('\', '/')
+    $expected = 'defaultLogDirectory=' + $logs.Replace('\', '/')
+    $appSection = [regex]::Match($normalizedContent, '(?ms)^\[app\]\s*(.*?)(?=^\[|\z)').Groups[1].Value
+    if (!$appSection.Contains($expected)) {
+        throw 'Global installed log directory does not use the current user Documents folder.'
     }
 } finally {
     if (!$process.HasExited) { $process.Kill(); $process.WaitForExit() }
