@@ -87,7 +87,9 @@ foreach ($entry in $directories.GetEnumerator()) {
     })
 }
 [void](Add-Element $feature 'ComponentRef' @{ Id = 'StartMenuShortcut' })
-[void](Add-Element $product 'UIRef' @{ Id = 'WixUI_Minimal' })
+$ui = $xml.CreateElement('ui', 'WixUI', 'http://wixtoolset.org/schemas/v4/wxs/ui')
+$ui.SetAttribute('Id', 'WixUI_Minimal')
+[void]$product.AppendChild($ui)
 $license = (Get-Content (Join-Path $PSScriptRoot '../LICENSE') -Raw) + "`n`n" +
     (Get-Content (Join-Path $PSScriptRoot '../NOTICE.txt') -Raw)
 $escaped = $license.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}').
