@@ -21,6 +21,11 @@ function Stable-Id([string]$prefix, [string]$path) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($path.ToLowerInvariant())
     return $prefix + [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).Substring(0, 32)
 }
+function Stable-Guid([string]$path) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes('Bokbacken/SerialESPHelper/MSI/' + $path.ToLowerInvariant())
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).Substring(0, 32)
+    return ([guid]$hash).ToString()
+}
 $product = Add-Element $xml.DocumentElement 'Package' @{
     Name = 'Serial ESP Helper'; Manufacturer = 'Bokbacken'; Version = $Version
     UpgradeCode = '67F22744-7F5C-49CB-BA58-0A0AE7DD9DBE'; Scope = 'perUser'
@@ -54,7 +59,7 @@ foreach ($file in $files) {
         $parent = $directories[$current]
     }
     $id = Stable-Id 'C' $relative
-    $component = Add-Element $parent 'Component' @{ Id = $id; Guid = '*' }
+    $component = Add-Element $parent 'Component' @{ Id = $id; Guid = (Stable-Guid $relative) }
     [void](Add-Element $component 'File' @{
         Id = (Stable-Id 'F' $relative); Source = $file.FullName; Name = $file.Name
     })
