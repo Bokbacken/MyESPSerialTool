@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.26.1
+# Serial ESP Helper — 0.26.2
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.26.1 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.26.2 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
    Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
    Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
@@ -221,6 +221,14 @@ Alla valda filer skickas i en `write_flash`-kommandokörning. Vid fel eller
 avbrott rapporteras att fullständigt resultat inte kunde bekräftas; flash kan
 vara delvis ändrat och enheten inte startbar. Kontrollera att ström och kabel
 är stabila.
+
+Flashfönstret växlar automatiskt till **Live device log** när en operation
+startar. Där visas samma stdout/stderr och fel som i diagnostikfönstret,
+utan att växla fönster. Status, förlopp och **Cancel device operation** finns
+direkt i flashfönstret; slutbekräftelserna öppnas framför det. Planens indata
+är låsta medan operationen körs. Avbrytning eller stängning under körning
+begär avbrott och behåller resultatet synligt tills du stänger fönstret igen.
+Fliken **Plan preview** behåller den granskade planen.
 
 Flashprogrammering kan starta om enheten och avbryta firmware och serial capture.
 Den ändrar aldrig `otadata` eller OTA-startflaggan automatiskt. Att skriva
@@ -435,7 +443,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.26.1`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.26.2`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

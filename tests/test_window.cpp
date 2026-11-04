@@ -10,9 +10,11 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QSignalSpy>
 #include <QTextEdit>
 #include <QTextCursor>
 #include <QFileDialog>
@@ -68,17 +70,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.26.1");
+        QCoreApplication::setApplicationVersion("0.26.2");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.26.1"));
+        QVERIFY(window.windowTitle().contains("0.26.2"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.1"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.2"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -521,8 +523,9 @@ private slots:
         QCOMPARE(file.write(bytes), qint64(bytes.size()));
         file.close();
         FlashPlan::Plan captured;
-        FlashPlanDialog plan({}, [&captured](const FlashPlan::Plan &value) { captured = value; },
-                             nullptr, chip, 0x400000);
+        FlashPlanDialog plan({}, nullptr, chip, 0x400000);
+        connect(&plan, &FlashPlanDialog::flashRequested, &plan,
+                [&captured](const FlashPlan::Plan &value) { captured = value; });
         auto *capacity = plan.findChild<QComboBox *>("planCapacity");
         QVERIFY(capacity->isEditable());
         QVERIFY(capacity->findData(QVariant::fromValue(quint64(0x800000))) >= 0);
@@ -562,8 +565,9 @@ private slots:
             {0, 0x10, 0x10000, 0x10000, "ota0", 0},
             {0, 0x11, 0x20000, 0x10000, "ota1", 0}};
         FlashPlan::Plan captured;
-        FlashPlanDialog plan(partitions,
-            [&captured](const FlashPlan::Plan &value) { captured = value; }, nullptr, "esp32s3", 0x400000);
+        FlashPlanDialog plan(partitions, nullptr, "esp32s3", 0x400000);
+        connect(&plan, &FlashPlanDialog::flashRequested, &plan,
+                [&captured](const FlashPlan::Plan &value) { captured = value; });
         QTemporaryDir directory;
         const QString path = directory.filePath("app.bin");
         QFile file(path);
@@ -602,6 +606,22 @@ private slots:
         target->setCurrentIndex(target->findData(-1));
         QVERIFY(address->isEnabled());
     }
+    void closingBusyFlashWindowRequestsCancelAndKeepsResultsVisible() {
+        FlashPlanDialog plan({});
+        QSignalSpy cancelled(&plan, &FlashPlanDialog::cancelRequested);
+        plan.show();
+        plan.setOperationState("Writing...", 50, 100, true);
+        plan.close();
+        QCOMPARE(cancelled.count(), 1);
+        QVERIFY(plan.isVisible());
+        plan.reject();
+        QCOMPARE(cancelled.count(), 2);
+        QVERIFY(plan.isVisible());
+        plan.setOperationState("Write cancelled; flash may be partially modified.", 0, 100, false);
+        QVERIFY(plan.findChild<QLabel *>("flashOperationStatus")->text().contains("partially"));
+        plan.close();
+        QVERIFY(!plan.isVisible());
+    }
     void explicitBothOtaSlotsAreVerifiedAndWrittenWithoutBootSelectionChange() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -629,6 +649,12 @@ private slots:
         diagnostics.findChild<QPushButton *>("openFlashPlan")->click();
         auto *planDialog = diagnostics.findChild<FlashPlanDialog *>();
         QVERIFY(planDialog);
+        auto *liveLog = planDialog->findChild<QPlainTextEdit *>("flashOperationOutput");
+        auto *liveStatus = planDialog->findChild<QLabel *>("flashOperationStatus");
+        auto *liveProgress = planDialog->findChild<QProgressBar *>("flashOperationProgress");
+        auto *cancelFlash = planDialog->findChild<QPushButton *>("cancelFlashOperation");
+        QVERIFY(liveLog && liveStatus && liveProgress && cancelFlash);
+        QCOMPARE(liveLog->document(), diagnostics.findChild<QPlainTextEdit *>("esptoolOutput")->document());
         planDialog->findChild<QComboBox *>("planChip")
             ->setCurrentIndex(planDialog->findChild<QComboBox *>("planChip")->findData("esp32s3"));
         planDialog->findChild<QComboBox *>("planCapacity")->setEditText("0x400000");
@@ -672,6 +698,7 @@ private slots:
             else if (message->objectName() == "finalFlashConfirmation") {
                 sawFinalConfirmation = true;
                 QCOMPARE(message->defaultButton(), message->button(QMessageBox::Cancel));
+                QCOMPARE(message->parentWidget(), planDialog);
                 message->button(QMessageBox::Yes)->click();
             }
         });
@@ -697,6 +724,11 @@ private slots:
         QCOMPARE(writes, 1);
         QVERIFY(wroteOta0 && wroteOta1);
         QVERIFY(status->text().contains("OTA boot selection unchanged"));
+        QCOMPARE(liveStatus->text(), status->text());
+        QCOMPARE(liveProgress->value(), 100);
+        QVERIFY(liveLog->toPlainText().contains("write-flash"));
+        QCOMPARE(planDialog->findChild<QTabWidget *>("flashResults")->currentWidget(), liveLog);
+        QVERIFY(!cancelFlash->isEnabled());
 
         qputenv("FAKE_ESPTOOL_MODE", "wrong-chip");
         writeOperationStarted = false;
@@ -712,6 +744,26 @@ private slots:
         for (const auto &line : noWrongChipWrite.readAll().split('\n'))
             if (QJsonDocument::fromJson(line).array().contains("write-flash")) ++writesAfterMismatch;
         QCOMPARE(writesAfterMismatch, 1);
+        QVERIFY(liveLog->toPlainText().contains("WRONG CHIP"));
+        QCOMPARE(liveStatus->text(), status->text());
+        qputenv("FAKE_ESPTOOL_MODE", "sleep-write");
+        writeOperationStarted = false;
+        confirmationTimer.start();
+        planDialog->findChild<QPushButton *>("writeFlashPlan")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(liveProgress->value(), 50, 10000);
+        QCOMPARE(liveProgress->maximum(), 100);
+        QVERIFY(liveStatus->text().startsWith("Writing"));
+        QVERIFY(liveLog->toPlainText().contains("50 %"));
+        QVERIFY(!planDialog->findChild<QPushButton *>("inspectFlashPlan")->isEnabled());
+        QVERIFY(cancelFlash->isEnabled());
+        cancelFlash->click();
+        QTRY_VERIFY_WITH_TIMEOUT(liveStatus->text().contains("FLASH COMMAND FAILED"), 5000);
+        confirmationTimer.stop();
+        QVERIFY(liveLog->toPlainText().contains("partially modified flash"));
+        QCOMPARE(acquired, 4);
+        QCOMPARE(released, 4);
+        QVERIFY(planDialog->isVisible());
+        QVERIFY(!cancelFlash->isEnabled());
         planDialog->close();
         qunsetenv("FAKE_ESPTOOL_MODE");
         qunsetenv("FAKE_ESPTOOL_ARGS_FILE");

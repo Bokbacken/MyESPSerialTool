@@ -2,6 +2,7 @@
 #include "flashplan.h"
 
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -9,8 +10,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTabWidget>
+#include <QTextCursor>
 #include <QVBoxLayout>
 #include <memory>
 
@@ -38,7 +42,7 @@ quint64 normalBootAddress(const QString &chip) {
 }
 
 FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
-                                 FlashCallback flash, QWidget *parent,
+                                 QWidget *parent,
                                  const QString &detectedChip, quint64 detectedCapacity)
     : QDialog(parent) {
     setWindowTitle("Flash firmware");
@@ -132,9 +136,45 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
     report->setReadOnly(true);
     report->setPlainText("No plan inspected. An app BIN is not a merged full-flash image. "
         "Partition-table changes require a complete, explicitly addressed package.");
-    layout->addWidget(report, 1);
+    results = new QTabWidget;
+    results->setObjectName("flashResults");
+    results->addTab(report, "Plan preview");
+    operationOutput = new QPlainTextEdit;
+    operationOutput->setObjectName("flashOperationOutput");
+    operationOutput->setReadOnly(true);
+    results->addTab(operationOutput, "Live device log");
+    layout->addWidget(results, 1);
+    operationStatus = new QLabel("No device operation started.");
+    operationStatus->setObjectName("flashOperationStatus");
+    operationStatus->setTextFormat(Qt::PlainText);
+    operationStatus->setWordWrap(true);
+    layout->addWidget(operationStatus);
+    auto *operationRow = new QHBoxLayout;
+    operationProgress = new QProgressBar;
+    operationProgress->setObjectName("flashOperationProgress");
+    operationProgress->setRange(0, 100);
+    operationProgress->setValue(0);
+    operationRow->addWidget(operationProgress, 1);
+    auto *cancel = new QPushButton("Cancel device operation");
+    cancel->setObjectName("cancelFlashOperation");
+    cancel->setEnabled(false);
+    operationRow->addWidget(cancel);
+    layout->addLayout(operationRow);
+    connect(cancel, &QPushButton::clicked, this, &FlashPlanDialog::cancelRequested);
+    connect(operationOutput, &QPlainTextEdit::textChanged, this, [this] {
+        operationOutput->moveCursor(QTextCursor::End);
+    });
 
     auto plan = std::make_shared<FlashPlan::Plan>();
+    const QList<QWidget *> operationControls{
+        chip, capacity, appTarget, table, manifest, merged, add, remove, preview};
+    connect(this, &FlashPlanDialog::runningChanged, this,
+        [plan, operationControls, cancel, recheck, write](bool running) {
+            for (auto *control : operationControls) control->setEnabled(!running);
+            cancel->setEnabled(running);
+            recheck->setEnabled(!running && !plan->files.isEmpty());
+            write->setEnabled(!running && !plan->files.isEmpty());
+        });
     auto invalidate = [plan, report, recheck, write] {
         *plan = {};
         recheck->setEnabled(false);
@@ -342,7 +382,7 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
             report->setPlainText(plan->report + "\n\nFile fingerprints unchanged at this check.");
         }
     });
-    connect(write, &QPushButton::clicked, this, [this, plan, report, recheck, write, flash] {
+    connect(write, &QPushButton::clicked, this, [this, plan, report, recheck, write] {
         QString error;
         if (!FlashPlan::revalidate(*plan, error)) {
             report->setPlainText("PLAN INVALIDATED: " + error);
@@ -351,6 +391,34 @@ FlashPlanDialog::FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
             write->setEnabled(false);
             return;
         }
-        if (flash) flash(*plan);
+        emit flashRequested(*plan);
     });
+}
+
+void FlashPlanDialog::setOperationOutput(QTextDocument *document) {
+    operationOutput->setDocument(document);
+    operationOutput->moveCursor(QTextCursor::End);
+}
+
+void FlashPlanDialog::setOperationState(const QString &status, int value, int maximum, bool running) {
+    operationStatus->setText(status);
+    operationProgress->setRange(0, maximum);
+    operationProgress->setValue(value);
+    if (running && !operationRunning) results->setCurrentWidget(operationOutput);
+    if (running != operationRunning) {
+        operationRunning = running;
+        emit runningChanged(running);
+    }
+}
+
+void FlashPlanDialog::reject() {
+    if (operationRunning) emit cancelRequested();
+    else QDialog::reject();
+}
+
+void FlashPlanDialog::closeEvent(QCloseEvent *event) {
+    if (operationRunning) {
+        emit cancelRequested();
+        event->ignore();
+    } else QDialog::closeEvent(event);
 }

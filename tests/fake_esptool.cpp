@@ -56,7 +56,13 @@ int main(int argc, char **argv) {
             << (mode == "wrong-flash-size" ? "8MB\n" : "4MB\n");
         return 0;
     }
-    if (command == "write-flash" || command == "write_flash") return 0;
+    if (command == "write-flash" || command == "write_flash") {
+        QTextStream out(stdout);
+        out << "Writing at 0x00010000 (50 %)\n";
+        out.flush();
+        if (mode == "sleep-write") QThread::sleep(60);
+        return 0;
+    }
     if (command == "read-flash" && commandIndex + 3 < args.size()) {
         bool ok = false;
         const quint64 size = args[commandIndex + 2].toULongLong(&ok, 0);

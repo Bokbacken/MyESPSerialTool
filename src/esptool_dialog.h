@@ -5,6 +5,7 @@
 #include "flashplan.h"
 #include <QDialog>
 #include <QProcess>
+#include <QPointer>
 #include <QVector>
 #include <functional>
 #include <memory>
@@ -17,6 +18,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QTemporaryFile;
+class FlashPlanDialog;
 
 class EsptoolDialog : public QDialog {
     Q_OBJECT
@@ -35,6 +37,7 @@ public:
 signals:
     void saveSettingsRequested();
     void pathChanged(const QString &path);
+    void operationStateChanged(const QString &status, int value, int maximum, bool running);
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
@@ -91,6 +94,7 @@ private:
     quint64 snapshotCapacity = 0;
     int completedWrites = 0;
     int totalWrites = 0;
+    QPointer<FlashPlanDialog> flashWindow;
 
     void begin(Operation requested);
     void startFlash(const FlashPlan::Plan &plan);
@@ -113,4 +117,6 @@ private:
     bool parseOtaOutput();
     void clearLayout();
     void updateControls();
+    void publishOperationState();
+    QWidget *operationParent();
 };
