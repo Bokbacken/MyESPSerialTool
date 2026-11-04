@@ -112,6 +112,9 @@ buntas inte med appen. **ESP diagnostics…** kontrollerar verktygets version
 innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behålla
 sökvägen. Diagnostikvyn har också **Save global esptool path to INI**;
 en ändrad sökväg märks **NOT saved** tills du sparar.
+Från 0.26.1 känns även chipraden `Chip type:` i esptool 5.3.1 igen,
+utöver det äldre `Chip is`-formatet. Meddelandet att ESP32-S3 saknar chip-ID
+och att MAC läses i stället är normalt och blockerar inte chipidentifieringen.
 
 Diagnostikfönstret kan visa chip-/revisions- och flash-ID-information, läsa
 ESP-IDF:s partitionstabell från adressen i **Explicit partition table address**

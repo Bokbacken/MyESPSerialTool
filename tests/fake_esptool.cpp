@@ -45,8 +45,10 @@ int main(int argc, char **argv) {
     const QString command = args[commandIndex];
     if (command == "chip-id") {
         QTextStream(stdout) << (mode == "wrong-chip"
-            ? "Chip is ESP32-C3, revision v0.2\n"
-            : "Chip is ESP32-S3, revision v0.2\n");
+            ? "Chip type:          ESP32-C3 (revision v0.2)\n"
+            : "Detecting chip type... ESP32-S3\n"
+              "Chip type:          ESP32-S3 (QFN56) (revision v0.2)\n"
+              "Warning: ESP32-S3 has no chip ID. Reading MAC address instead.\n");
         return 0;
     }
     if (command == "flash-id") {

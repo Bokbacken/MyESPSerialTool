@@ -39,6 +39,16 @@ private slots:
         QCOMPARE(chip, QString("esp32s3"));
         QVERIFY(Esptool::parseDetectedChip("Chip type: ESP32-S3 (QFN56) (revision v0.2)", chip, error));
         QCOMPARE(chip, QString("esp32s3"));
+        const QString output531 =
+            "esptool v5.3.1\r\nSerial port TEST:\r\nConnecting...\r\n"
+            "Detecting chip type... ESP32-S3\r\nConnected to ESP32-S3 on TEST:\r\n"
+            "Chip type:          ESP32-S3 (QFN56) (revision v0.2)\r\n"
+            "Features:           Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz\r\n"
+            "Uploading stub flasher...\r\nRunning stub flasher...\r\nStub flasher running.\r\n"
+            "Warning: ESP32-S3 has no chip ID. Reading MAC address instead.\r\n"
+            "Hard resetting via RTS pin...\r\n";
+        QVERIFY2(Esptool::parseDetectedChip(output531, chip, error), qPrintable(error));
+        QCOMPARE(chip, QString("esp32s3"));
         QVERIFY(!Esptool::parseDetectedChip("Chip is ESP8266", chip, error));
         QVERIFY(Esptool::parseFlashCapacity("Detected flash size: 4MB", capacity, error));
         QCOMPARE(capacity, quint64(4 * 1024 * 1024));
