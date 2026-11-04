@@ -77,7 +77,7 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
       versionButton(new QPushButton("Check version")),
       browseButton(new QPushButton("Browse…")),
       otaButton(new QPushButton("Read layout + OTA selection")),
-      planButton(new QPushButton("Offline flash plan...")), confirmReset(requireResetConfirmation) {
+      planButton(new QPushButton("Flash firmware...")), confirmReset(requireResetConfirmation) {
     setWindowTitle("ESP diagnostics — esptool");
     resize(820, 650);
     auto *layout = new QVBoxLayout(this);
@@ -172,7 +172,8 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     connect(otaButton, &QPushButton::clicked, this, [this] { begin(Operation::OtaInfo); });
     connect(planButton, &QPushButton::clicked, this, [this] {
         auto *dialog = new FlashPlanDialog(partitions,
-            [this](const FlashPlan::Plan &plan) { startFlash(plan); }, this);
+            [this](const FlashPlan::Plan &plan) { startFlash(plan); }, this,
+            snapshotChip, snapshotCapacity);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
     });
@@ -284,6 +285,10 @@ void EsptoolDialog::begin(Operation requested) {
         }
     }
     operation = requested;
+    if (requested == Operation::ChipAndFlash) {
+        snapshotChip.clear();
+        snapshotCapacity = 0;
+    }
     readingOta = false;
     if (requested == Operation::PartitionTable || requested == Operation::OtaInfo) clearLayout();
     busy = true;
@@ -386,6 +391,17 @@ void EsptoolDialog::processFinished(int exitCode, QProcess::ExitStatus exitStatu
             failOperation(QString("esptool command failed (exit code %1).").arg(exitCode));
         }
         return;
+    }
+    if (operation == Operation::ChipAndFlash) {
+        QString error;
+        const QString text = QString::fromUtf8(stdoutBytes + '\n' + stderrBytes);
+        if (currentCommand == Esptool::Command::ChipId) {
+            if (!Esptool::parseDetectedChip(text, snapshotChip, error))
+                output->appendPlainText(error + " Choose the plan chip manually.");
+        } else if (currentCommand == Esptool::Command::FlashId) {
+            if (!Esptool::parseFlashCapacity(text, snapshotCapacity, error))
+                output->appendPlainText(error + " Choose the plan flash capacity manually.");
+        }
     }
     if (operation == Operation::FlashWrite) {
         if (currentCommand == Esptool::Command::ChipId) {

@@ -57,7 +57,7 @@ QStringList arguments(const Version &version, const QString &port, int baud,
 
 bool parseDetectedChip(const QString &output, QString &chip, QString &error) {
     const auto match = QRegularExpression(
-        R"(\bChip is\s+([A-Za-z0-9-]+))", QRegularExpression::CaseInsensitiveOption)
+        R"(\bChip(?: is\s+| type:\s*)([A-Za-z0-9-]+))", QRegularExpression::CaseInsensitiveOption)
         .match(output);
     if (!match.hasMatch()) {
         error = "Could not identify the connected chip from esptool output.";

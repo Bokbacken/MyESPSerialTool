@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.26.0
+# Serial ESP Helper — 0.26.1
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -31,7 +31,7 @@ egna villkor. Detta är inte juridisk rådgivning.
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
    Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.26.0 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.26.1 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
    Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
    Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
@@ -157,8 +157,26 @@ ger ingen säker kandidat; krypterad, tvetydig eller anpassad OTA-layout tolkas
 inte automatiskt. Ingen partition betecknas därför automatiskt som säker
 att skriva över. Uppgifterna är en läst ögonblicksbild, inte kontinuerlig övervakning.
 
-**Offline flash plan...** kan användas helt utan esptool eller ansluten enhet.
-Välj uttryckligen chip och flashkapacitet i byte, till exempel `0x800000`.
+**Flash firmware...** återanvänder chip och flashstorlek från senaste
+**Chip + flash info** i samma diagnostikfönster. Källan till förvalen visas;
+uppgifterna är sessionsbundna ögonblicksbilder, inte sparade enhetsegenskaper.
+En ny informationsläsning rensar tidigare förval, så ett misslyckat försök
+inte lämnar gamla värden som nya. Chip och flashstorlek kontrolleras alltid
+på nytt före skrivning.
+
+För en vanlig merged-fil: kör **Chip + flash info**, öppna **Flash firmware...**,
+välj **Add merged BIN...**, granska **Inspect plan** och fortsätt med
+**Verify device and flash…**. Filrollen blir Merged image, flashadressen
+föreslås som `0x0` och bildhuvudets offset som `0x1000` för ESP32/S2,
+annars `0x0`. Förslagen måste stämma med hur filen skapades; granskningen
+kontrollerar det valda bildhuvudet men inte hela det inbäddade paketet.
+
+Planen kan fortfarande granskas utan en ansluten enhet. Chip och vanliga
+flashstorlekar väljs i dropdowns; saknas läst information måste de väljas
+manuellt. Flashstorlek, adresser och bildhuvudets offset accepterar även egna
+numeriska värden (decimal eller `0x`-hex). Adressförslag beror på filrollen
+och innehåller relevanta partitioner från den lästa tabellen. Förslagen är
+normala värden, inte en garanti för att de passar varje paket.
 Fyra indataflöden stöds:
 
 - ESP-IDF-byggkatalog: välj dess `flasher_args.json`; relativa filer och
@@ -166,8 +184,8 @@ Fyra indataflöden stöds:
   `app`/`bootloader`/`partition-table`-poster; övriga filer förblir opak data.
 - Separata Arduino-/PlatformIO-BIN: lägg till varje fil och välj roll och
   flashadress uttryckligen. Filnamnet avgör aldrig rollen.
-- En app-BIN: välj **App**, ange startadressen och jämför med en inläst
-  app-partition. Välj uttryckligen OTA0, OTA1 eller **båda OTA-slotarna**.
+- En app-BIN: välj **App** och välj önskad inläst app-partition i dropdownen;
+  startadressen fylls i automatiskt. Välj uttryckligen OTA0, OTA1 eller **båda OTA-slotarna**.
   "Båda" skriver samma app-BIN en gång till varje explicit OTA-partitionsstart;
   det gissar inte vilken partition som är inaktiv.
 - Merged/full image: välj **Merged image**, startadress och det explicita
@@ -414,7 +432,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.26.0`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.26.1`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

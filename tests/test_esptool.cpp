@@ -37,6 +37,8 @@ private slots:
         quint64 capacity = 0;
         QVERIFY(Esptool::parseDetectedChip("Chip is ESP32-S3 (revision v0.2)", chip, error));
         QCOMPARE(chip, QString("esp32s3"));
+        QVERIFY(Esptool::parseDetectedChip("Chip type: ESP32-S3 (QFN56) (revision v0.2)", chip, error));
+        QCOMPARE(chip, QString("esp32s3"));
         QVERIFY(!Esptool::parseDetectedChip("Chip is ESP8266", chip, error));
         QVERIFY(Esptool::parseFlashCapacity("Detected flash size: 4MB", capacity, error));
         QCOMPARE(capacity, quint64(4 * 1024 * 1024));

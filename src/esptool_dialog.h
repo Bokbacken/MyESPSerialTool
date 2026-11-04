@@ -87,6 +87,8 @@ private:
     Esptool::Command currentCommand = Esptool::Command::ChipId;
     QString detectedChip;
     quint64 detectedFlashSize = 0;
+    QString snapshotChip;
+    quint64 snapshotCapacity = 0;
     int completedWrites = 0;
     int totalWrites = 0;
 

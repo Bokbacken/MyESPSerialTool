@@ -37,12 +37,12 @@ public:
     bool opened = false;
 };
 
-static QByteArray sampleEsp32S3App() {
+static QByteArray sampleEsp32S3App(quint16 chipId = 9) {
     QByteArray bytes(24, '\0');
     bytes[0] = char(0xe9);
     bytes[1] = 1;
     bytes[23] = 1;
-    qToLittleEndian<quint16>(9, reinterpret_cast<uchar *>(bytes.data() + 12));
+    qToLittleEndian<quint16>(chipId, reinterpret_cast<uchar *>(bytes.data() + 12));
     QByteArray segmentHeader(8, '\0');
     qToLittleEndian<quint32>(4, reinterpret_cast<uchar *>(segmentHeader.data() + 4));
     bytes += segmentHeader + QByteArray::fromHex("01020304");
@@ -68,17 +68,17 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.26.0");
+        QCoreApplication::setApplicationVersion("0.26.1");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.26.0"));
+        QVERIFY(window.windowTitle().contains("0.26.1"));
         QVERIFY(window.windowTitle().endsWith("ESP"));
         const auto *version = window.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.0"));
+        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.1"));
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
@@ -421,7 +421,7 @@ private slots:
         QVERIFY(!recheck->isEnabled());
         preview->click();
         QVERIFY(report->toPlainText().contains("PLAN REJECTED"));
-        plan->findChild<QLineEdit *>("planCapacity")->setText("0x400000");
+        plan->findChild<QComboBox *>("planCapacity")->setEditText("0x400000");
         QVERIFY(report->toPlainText().contains("Inspect the plan again"));
         QVERIFY(!recheck->isEnabled());
         QTemporaryDir directory;
@@ -470,6 +470,138 @@ private slots:
         QCOMPARE(acquired, 0);
         plan->close();
     }
+    void flashPlanReusesChipInfoAndDropsDefaultsAfterFailedRefresh() {
+        Profile profile;
+        profile.port = "TEST";
+        profile.esptoolPath = qEnvironmentVariable("FAKE_ESPTOOL_PATH");
+        EsptoolDialog diagnostics(profile, [](QString &) { return true; }, [] {}, false);
+        auto *status = diagnostics.findChild<QLabel *>("esptoolStatus");
+        auto *read = diagnostics.findChild<QPushButton *>("chipFlashInfo");
+        auto *open = diagnostics.findChild<QPushButton *>("openFlashPlan");
+        read->click();
+        QTRY_VERIFY_WITH_TIMEOUT(read->isEnabled(), 5000);
+        QVERIFY(status->text().contains("finished"));
+        open->click();
+        auto *plan = diagnostics.findChild<FlashPlanDialog *>();
+        QVERIFY(plan);
+        QCOMPARE(plan->findChild<QComboBox *>("planChip")->currentData().toString(), QString("esp32s3"));
+        QCOMPARE(plan->findChild<QComboBox *>("planCapacity")->currentData().toULongLong(),
+                 quint64(0x400000));
+        QVERIFY(plan->findChild<QLabel *>("planDefaultsSource")->text().contains("checked again"));
+        plan->close();
+        QTRY_VERIFY(diagnostics.findChild<FlashPlanDialog *>() == nullptr);
+        qputenv("FAKE_ESPTOOL_MODE", "fail");
+        read->click();
+        QTRY_VERIFY_WITH_TIMEOUT(read->isEnabled(), 5000);
+        QVERIFY(status->text().contains("failed"));
+        open->click();
+        plan = diagnostics.findChild<FlashPlanDialog *>();
+        QVERIFY(plan);
+        QVERIFY(plan->findChild<QComboBox *>("planChip")->currentData().toString().isEmpty());
+        QVERIFY(!plan->findChild<QComboBox *>("planCapacity")->currentData().isValid());
+        plan->close();
+        qunsetenv("FAKE_ESPTOOL_MODE");
+    }
+    void mergedFlashUsesCommonDropdownPresets_data() {
+        QTest::addColumn<QString>("chip");
+        QTest::addColumn<quint64>("headerOffset");
+        QTest::addColumn<quint16>("chipId");
+        QTest::newRow("esp32s3") << QString("esp32s3") << quint64(0) << quint16(9);
+        QTest::newRow("esp32") << QString("esp32") << quint64(0x1000) << quint16(0);
+    }
+    void mergedFlashUsesCommonDropdownPresets() {
+        QFETCH(QString, chip);
+        QFETCH(quint64, headerOffset);
+        QFETCH(quint16, chipId);
+        QTemporaryDir directory;
+        const QString path = directory.filePath("merged.bin");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray bytes = QByteArray(int(headerOffset), char(0xff)) + sampleEsp32S3App(chipId);
+        QCOMPARE(file.write(bytes), qint64(bytes.size()));
+        file.close();
+        FlashPlan::Plan captured;
+        FlashPlanDialog plan({}, [&captured](const FlashPlan::Plan &value) { captured = value; },
+                             nullptr, chip, 0x400000);
+        auto *capacity = plan.findChild<QComboBox *>("planCapacity");
+        QVERIFY(capacity->isEditable());
+        QVERIFY(capacity->findData(QVariant::fromValue(quint64(0x800000))) >= 0);
+        QTimer::singleShot(0, &plan, [&] {
+            auto *dialog = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->selectFile(path);
+            QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
+        });
+        plan.findChild<QPushButton *>("addMergedFile")->click();
+        auto *table = plan.findChild<QTableWidget *>("planInputs");
+        QCOMPARE(table->rowCount(), 1);
+        auto *address = qobject_cast<QComboBox *>(table->cellWidget(0, 2));
+        auto *header = qobject_cast<QComboBox *>(table->cellWidget(0, 3));
+        QVERIFY(address && header);
+        QCOMPARE(address->currentData().toULongLong(), quint64(0));
+        QCOMPARE(header->currentData().toULongLong(), headerOffset);
+        plan.findChild<QPushButton *>("inspectFlashPlan")->click();
+        auto *write = plan.findChild<QPushButton *>("writeFlashPlan");
+        QVERIFY2(write->isEnabled(),
+                 qPrintable(plan.findChild<QPlainTextEdit *>("flashPlanReport")->toPlainText()));
+        write->click();
+        QCOMPARE(captured.chip, chip);
+        QCOMPARE(captured.flashSize, quint64(0x400000));
+        QCOMPARE(captured.files.size(), 1);
+        QCOMPARE(captured.files[0].input.address, quint64(0));
+        QCOMPARE(captured.files[0].input.imageOffset, headerOffset);
+        address->setEditText("0x2000");
+        QVERIFY(!write->isEnabled());
+        plan.findChild<QPushButton *>("inspectFlashPlan")->click();
+        QVERIFY(write->isEnabled());
+        write->click();
+        QCOMPARE(captured.files[0].input.address, quint64(0x2000));
+    }
+    void appTargetDropdownFillsPartitionAddress() {
+        const QVector<Esptool::Partition> partitions{
+            {0, 0x10, 0x10000, 0x10000, "ota0", 0},
+            {0, 0x11, 0x20000, 0x10000, "ota1", 0}};
+        FlashPlan::Plan captured;
+        FlashPlanDialog plan(partitions,
+            [&captured](const FlashPlan::Plan &value) { captured = value; }, nullptr, "esp32s3", 0x400000);
+        QTemporaryDir directory;
+        const QString path = directory.filePath("app.bin");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const auto bytes = sampleEsp32S3App();
+        QCOMPARE(file.write(bytes), qint64(bytes.size()));
+        file.close();
+        QTimer::singleShot(0, &plan, [&] {
+            auto *dialog = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->selectFile(path);
+            QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
+        });
+        plan.findChild<QPushButton *>("addFlashFile")->click();
+        auto *table = plan.findChild<QTableWidget *>("planInputs");
+        auto *role = qobject_cast<QComboBox *>(table->cellWidget(0, 1));
+        auto *address = qobject_cast<QComboBox *>(table->cellWidget(0, 2));
+        auto *header = qobject_cast<QComboBox *>(table->cellWidget(0, 3));
+        role->setCurrentIndex(role->findData(int(FlashPlan::Kind::App)));
+        QVERIFY(!header->isEnabled());
+        auto *target = plan.findChild<QComboBox *>("planAppTarget");
+        target->setCurrentIndex(target->findData(1));
+        QCOMPARE(address->currentData().toULongLong(), quint64(0x20000));
+        QVERIFY(!address->isEnabled());
+        plan.findChild<QPushButton *>("inspectFlashPlan")->click();
+        auto *write = plan.findChild<QPushButton *>("writeFlashPlan");
+        QVERIFY(write->isEnabled());
+        write->click();
+        QCOMPARE(captured.files.first().input.address, quint64(0x20000));
+        target->setCurrentIndex(target->findData(-2));
+        QVERIFY(!write->isEnabled());
+        plan.findChild<QPushButton *>("inspectFlashPlan")->click();
+        QVERIFY(write->isEnabled());
+        write->click();
+        QCOMPARE(captured.files.size(), 2);
+        target->setCurrentIndex(target->findData(-1));
+        QVERIFY(address->isEnabled());
+    }
     void explicitBothOtaSlotsAreVerifiedAndWrittenWithoutBootSelectionChange() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -499,7 +631,7 @@ private slots:
         QVERIFY(planDialog);
         planDialog->findChild<QComboBox *>("planChip")
             ->setCurrentIndex(planDialog->findChild<QComboBox *>("planChip")->findData("esp32s3"));
-        planDialog->findChild<QLineEdit *>("planCapacity")->setText("0x400000");
+        planDialog->findChild<QComboBox *>("planCapacity")->setEditText("0x400000");
         QTimer::singleShot(0, planDialog, [&, planDialog] {
             auto *file = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
             QVERIFY(file);

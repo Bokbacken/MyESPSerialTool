@@ -10,5 +10,6 @@ class FlashPlanDialog : public QDialog {
 public:
     using FlashCallback = std::function<void(const FlashPlan::Plan &)>;
     explicit FlashPlanDialog(const QVector<Esptool::Partition> &partitions,
-                             FlashCallback flash, QWidget *parent = nullptr);
+                             FlashCallback flash, QWidget *parent = nullptr,
+                             const QString &detectedChip = {}, quint64 detectedCapacity = 0);
 };
