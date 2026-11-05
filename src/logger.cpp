@@ -218,7 +218,7 @@ bool LogWorker::enqueueRecord(const Record &record) {
         if (record.bytes.size() > profile.logQueueBytes - queued || queue.size() >= 4096) {
             failed = true;
             endReason = "queue overflow"; ended = record.received;
-            message = "LOGGING STOPPED: disk queue overflow; capture is incomplete. Manual pause, then Resume to start a new log.";
+            message = "LOGGING STOPPED: disk queue overflow; capture is incomplete. Use Session > Split log, or Pause then Connect, to start a new log.";
         } else {
             queue.enqueue(record); queued += record.bytes.size(); available.wakeOne(); return true;
         }

@@ -3,9 +3,12 @@
 #include "session.h"
 #include "terminal.h"
 #include "filter.h"
-#include <QMainWindow>
+#include <QHash>
+#include <QKeySequence>
+#include <QWidget>
 #include <memory>
 
+class QAction;
 class QComboBox;
 class QCheckBox;
 class QLabel;
@@ -22,15 +25,25 @@ public:
     explicit AppConfig(QObject *parent = nullptr) : QObject(parent) {}
     bool saveProfile(const Profile &profile, QWidget *parent);
     bool chooseFile(QWidget *parent);
+    bool editGlobalSettings(QWidget *parent);
 signals:
     void profilesChanged();
+    void globalsChanged();
 };
 
-class SessionWindow : public QMainWindow {
+void showFilterHelp(QWidget *parent);
+
+// One profile/serial session. Hosted as an MDI sub-window by MainWindow; its actions feed the menus.
+class SessionWindow : public QWidget {
     Q_OBJECT
 public:
     explicit SessionWindow(AppConfig *config, const Profile &profile, SerialTransport *transport = nullptr);
     ~SessionWindow() override;
+    QString profileName() const { return settings.name; }
+    QAction *action(const QString &name) const;
+    void setShortcutsActive(bool active);
+signals:
+    void summaryChanged();
 private slots:
     void applyState(SessionState state);
 private:
@@ -43,31 +56,35 @@ private:
     SessionWorker *worker;
     EsptoolDialog *diagnosticsDialog = nullptr;
     SessionState state = SessionState::Disconnected;
-    QComboBox *profiles, *port, *baud, *sendText, *newline;
-    QCheckBox *readOnly, *echo, *follow, *hexSend, *autoReconnect;
+    QComboBox *port, *baud, *sendText, *newline;
+    QAction *readOnly, *follow, *autoReconnect, *splitAction, *connectAction;
+    QCheckBox *echo, *hexSend;
     QLabel *status, *identity, *logStatus;
     QPushButton *sendButton;
     QTextEdit *view;
     QPlainTextEdit *events;
+    QWidget *filterBar, *sendBar;
     QTimer *renderTimer;
     QLineEdit *terminalFilter;
     QCheckBox *filterCase, *filterHighlight;
     QComboBox *filterMode;
     QLabel *filterStatus;
-    QPushButton *saveFiltered;
+    QAction *saveFiltered, *saveSelection;
     LineFilter expressionFilter;
     bool filterValid = true;
     bool shuttingDown = false;
     QStringList availablePorts;
     QString logPath, logFault;
-    QList<QWidget *> connectionEditors;
+    QList<QObject *> connectionEditors;
+    QHash<QAction *, QKeySequence> shortcuts;
+    QAction *makeAction(const QString &name, const QString &text, const QKeySequence &key = {});
     void loadProfile(const Profile &profile);
     Profile runtimeProfile() const;
     bool collect();
-    void refreshProfiles();
     void refreshPorts();
     void advanced(int tab = 0);
     void updateLogStatus();
+    void updateTitle();
     void connectSession();
     void showEsptool();
     void sendMessage();

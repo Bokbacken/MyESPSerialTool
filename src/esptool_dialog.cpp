@@ -170,26 +170,7 @@ EsptoolDialog::EsptoolDialog(const Profile &p, AcquirePort acquire,
     connect(chipButton, &QPushButton::clicked, this, [this] { begin(Operation::ChipAndFlash); });
     connect(partitionButton, &QPushButton::clicked, this, [this] { begin(Operation::PartitionTable); });
     connect(otaButton, &QPushButton::clicked, this, [this] { begin(Operation::OtaInfo); });
-    connect(planButton, &QPushButton::clicked, this, [this] {
-        if (auto *existing = findChild<FlashPlanDialog *>()) {
-            existing->show();
-            existing->raise();
-            existing->activateWindow();
-            return;
-        }
-        auto *dialog = new FlashPlanDialog(partitions, this, snapshotChip, snapshotCapacity);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setOperationOutput(output->document());
-        dialog->setOperationState(status->text(), progress->value(), progress->maximum(), busy);
-        connect(this, &EsptoolDialog::operationStateChanged, dialog, &FlashPlanDialog::setOperationState);
-        connect(dialog, &FlashPlanDialog::cancelRequested, this, &EsptoolDialog::cancelCurrent);
-        connect(dialog, &FlashPlanDialog::flashRequested, this,
-            [this, dialog](const FlashPlan::Plan &plan) {
-                flashWindow = dialog;
-                startFlash(plan);
-            });
-        dialog->show();
-    });
+    connect(planButton, &QPushButton::clicked, this, &EsptoolDialog::openFlashPlan);
     connect(tableOffset, &QLineEdit::textChanged, this, [this] { clearLayout(); });
     connect(rawButton, &QPushButton::clicked, this, [this] {
         if (chooseRawDump()) begin(Operation::RawDump);
@@ -861,4 +842,24 @@ void EsptoolDialog::publishOperationState() {
 QWidget *EsptoolDialog::operationParent() {
     if (operation == Operation::FlashWrite && flashWindow) return flashWindow.data();
     return this;
+}
+void EsptoolDialog::openFlashPlan() {
+    if (auto *existing = findChild<FlashPlanDialog *>()) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+    auto *dialog = new FlashPlanDialog(partitions, this, snapshotChip, snapshotCapacity);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setOperationOutput(output->document());
+    dialog->setOperationState(status->text(), progress->value(), progress->maximum(), busy);
+    connect(this, &EsptoolDialog::operationStateChanged, dialog, &FlashPlanDialog::setOperationState);
+    connect(dialog, &FlashPlanDialog::cancelRequested, this, &EsptoolDialog::cancelCurrent);
+    connect(dialog, &FlashPlanDialog::flashRequested, this,
+        [this, dialog](const FlashPlan::Plan &plan) {
+            flashWindow = dialog;
+            startFlash(plan);
+        });
+    dialog->show();
 }

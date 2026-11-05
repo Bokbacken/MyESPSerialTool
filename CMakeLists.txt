@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SerialESPHelper VERSION 0.26.2 LANGUAGES CXX)
+project(SerialESPHelper VERSION 0.27.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -15,6 +15,7 @@ add_library(serial_core
 target_include_directories(serial_core PUBLIC src)
 target_link_libraries(serial_core PUBLIC Qt6::Core Qt6::Gui Qt6::SerialPort)
 qt_add_executable(SerialESPHelper src/main.cpp src/window.cpp src/window.h
+    src/main_window.cpp src/main_window.h
     src/esptool_dialog.cpp src/esptool_dialog.h
     src/flashplan_dialog.cpp src/flashplan_dialog.h)
 target_link_libraries(SerialESPHelper PRIVATE serial_core Qt6::Widgets)
@@ -42,6 +43,7 @@ if(BUILD_TESTING)
     add_test(NAME gui_smoke COMMAND SerialESPHelper --smoke-test)
     set_tests_properties(gui_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     qt_add_executable(widget_tests tests/test_window.cpp src/window.cpp src/window.h
+        src/main_window.cpp src/main_window.h
         src/esptool_dialog.cpp src/esptool_dialog.h
         src/flashplan_dialog.cpp src/flashplan_dialog.h)
     target_link_libraries(widget_tests PRIVATE serial_core Qt6::Widgets Qt6::Test)

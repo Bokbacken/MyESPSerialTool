@@ -229,6 +229,24 @@ void SessionWorker::stopLog(const QString &reason) {
     if (!logger) return;
     logger->shutdown(reason, QDateTime::currentDateTimeUtc()); delete logger; logger = nullptr;
 }
+void SessionWorker::splitLog() {
+    initialize();
+    if (current != SessionState::Connected || !logger) {
+        report("Split log ignored: the session is not connected and recording.");
+        return;
+    }
+    const QString previous = logBase;
+    const auto now = QDateTime::currentDateTimeUtc();
+    logger->enqueueEvent("log split requested by user; continuing in a new log set", now);
+    stopLog("split by user");
+    startLog();
+    logger->enqueueEvent("continued after user split from " + QFileInfo(previous).fileName(), now);
+    logger->enqueueEvent("connected " + settings.port + " (connection kept open across split)", now);
+    // Same worker thread as the receive path, so the marker sits exactly between the two log sets.
+    if (display) display->append("\n----- log split " + now.toString(Qt::ISODateWithMs).toUtf8()
+        + " UTC: new log set " + QFileInfo(logBase).fileName().toUtf8() + " -----\n", now);
+    emit logSplit(previous);
+}
 void SessionWorker::startLog() {
     if (logger) return;
     const QString requested = QDir(logDirectory).filePath(logFileStem(settings,
@@ -240,6 +258,7 @@ void SessionWorker::startLog() {
         || QFileInfo::exists(base + ".lock")) {
         base = requested + "-" + QString::number(++suffix);
     }
+    logBase = base;
     logger = new LogWorker(settings, base, this);
     connect(logger, &LogWorker::fault, this, &SessionWorker::problem);
     logger->start();

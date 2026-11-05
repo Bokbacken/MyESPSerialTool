@@ -1,4 +1,4 @@
-# Serial ESP Helper — 0.26.2
+# Serial ESP Helper — 0.27.0
 
 Portabel serialterminal för ESP-enheter, primärt Windows x64. Terminal,
 trafikloggning, uttrycksfilter och separat esptool-diagnostik finns. Ingen Python,
@@ -29,45 +29,46 @@ egna villkor. Detta är inte juridisk rådgivning.
 2. Packa upp **hela** ZIP-filen i en skrivbar katalog. Starta
    `SerialESPHelper.exe` därifrån; flytta inte EXE-filen ensam. Ingen
    installation krävs. USB-drivrutin för USB-till-serial-adaptern kan behövas.
-   Fönstertiteln och en rad längst ned under INI-sökvägen visar versionsnumret.
+   Fönstertiteln och statusraden längst ned visar versionsnumret.
    Om Expression-väljaren saknas och
-   titeln inte visar 0.26.2 körs en äldre EXE. Stäng den och starta EXE-filen
+   titeln inte visar 0.27.0 körs en äldre EXE. Stäng den och starta EXE-filen
    direkt från det nyuppackade paketet, inte via en gammal genväg.
    Vid uppdatering: stäng programmet och behåll din `SerialESPHelper.ini`.
    Om Qt/runtime/plugins är oförändrade räcker det normalt att ersätta EXE
    och guiden. Annars uppdaterar du hela paketet utan att skriva över INI.
-3. Välj en profil eller klicka **New profile** för att skapa en. Skriv in
+3. Den första profilen öppnas automatiskt. Öppna andra med **File → Open profile**
+   eller skapa en ny med **File → New profile…**. Skriv in
    portnamnet, till exempel `COM7`, eller välj en upptäckt port. Portlistan
    uppdateras automatiskt, men portfältet är redigerbart så att en frånkopplad
    port kan anges i förväg. Baudrate är också redigerbar.
 4. Standardinställningen är 115200 baud, 8 databitar, ingen paritet, 1 stoppbit,
-   ingen flödeskontroll och **Read-only**. Öppna **Settings…** för fler
-   serialinställningar och loggning. Kontrollera DTR/RTS: de kan påverka reset
-   på ESP-kort. Spara med **Save profile** för att behålla ändringarna i INI-filen.
-5. Klicka **Connect / Resume** för att ansluta. Inkommande data visas i
-   terminalen och anslutningstillstånd/fel visas under statusraden och i
-   händelselistan längst ned. **Manual pause** kopplar från och blockerar
-   automatisk återanslutning tills du klickar **Connect / Resume** igen.
+   ingen flödeskontroll och **Read-only**. Använd **Settings → Connection…**
+   och **Settings → Logging…** för fler inställningar. Kontrollera DTR/RTS: de kan påverka reset
+   på ESP-kort. Spara med **File → Save profile** för att behålla ändringarna i INI-filen.
+5. Klicka **Connect** (F5) för att ansluta. Inkommande data visas i
+   terminalen. Anslutningstillstånd visas i den färgade statusetiketten och fel
+   i händelseloggen under terminalen. **Pause** (F6) kopplar från och blockerar
+   automatisk återanslutning tills du klickar **Connect** igen.
 6. För att skicka data, avmarkera **Read-only**, skriv text och välj
    radslut (`none`, `lf`, `cr` eller `crlf`). Markera **Hex bytes** för att
    skicka hexadecimala bytepar, till exempel `41 00 FF`. Lokal echo är valfri.
    Read-only skyddar bara mot sändning; det stoppar inte mottagning.
-7. Använd **New window** för ytterligare en enhet. Varje fönster har en egen
-   serialsession. **Clear rendered view** rensar bara terminalvisningen, inte
-   mottagningen eller loggfilerna. Stäng av **Follow scroll** för att läsa äldre
+7. Öppna ytterligare en profil för nästa enhet. Varje session har en egen
+   serialanslutning. **Edit → Clear terminal view** rensar bara terminalvisningen, inte
+   mottagningen eller loggfilerna. Stäng av **Follow new output** för att läsa äldre
    utdata medan mottagning och loggning fortsätter.
 
 ### Automatisk anslutning och profiler
 
-Rutan **Reconnect automatically after connection loss** styr återanslutning
-för just detta sessionsfönster. Den är på som standard och kan ändras även
+**Session → Reconnect automatically after connection loss** styr återanslutning
+för just denna session. Den är på som standard och kan ändras även
 under anslutning utan att porten öppnas om. Avmarkering medan sessionen väntar
-på en bortkopplad enhet avbryter väntan. **Manual pause** blockerar alltid
+på en bortkopplad enhet avbryter väntan. **Pause** blockerar alltid
 återanslutning tills du uttryckligen klickar **Connect / Resume** igen.
-Spara med **Save profile** för att behålla inställningen (`autoReconnect`).
+Spara med **File → Save profile** för att behålla inställningen (`autoReconnect`).
 
-Öppna **Settings… → Connection** och aktivera automatisk anslutning om profilen dessutom ska
-ansluta när dess fönster öppnas och försöka igen om den första anslutningen
+Öppna **Settings → Connection…** och aktivera automatisk anslutning om profilen dessutom ska
+ansluta när dess session öppnas och försöka igen om den första anslutningen
 misslyckas. Spara profilen för att behålla valet. Standard är av: fönstret
 ansluter inte vid start, och ett manuellt första anslutningsförsök görs en gång
 om porten inte kan öppnas. Återförsök efter att en session har varit ansluten
@@ -75,7 +76,7 @@ begränsas av profilens `retryLimit`.
 
 När enheten har ett USB-serienummer och VID/PID binds profilen till den
 identiteten första gången den ansluter. Då följer återanslutningen enheten även
-om COM-numret ändras. **Forget USB binding** rensar bindningen; spara profilen
+om COM-numret ändras. **Session → Forget USB binding** rensar bindningen; spara profilen
 för att behålla ändringen. Saknad eller tvetydig identitet leder inte till att
 programmet väljer en annan enhet godtyckligt. Utan unikt serienummer används
 portnamnet, vilket inte garanterar fysisk identitet om operativsystemet byter
@@ -104,13 +105,45 @@ installationen; nedgradering blockeras. Avinstallera via Windows appar.
 Kvarvarande INI/loggar kan tas bort manuellt om du vill.
 MSI och ZIP innehåller samma app, DLL:er, licenser och motsvarande Qt-källor.
 
+## Programöversikt och menyer
+
+Från 0.27.0 har programmet ett huvudfönster med vanliga menyer. Varje profil
+öppnas som en egen session i ett underfönster. **Window** ordnar sessionerna
+sida vid sida (**Tile**), överlappande (**Cascade**) eller som flikar
+(**Show as tabs**). Menyerna gäller alltid den aktiva sessionen, och
+kortkommandon som F5 påverkar aldrig en session i bakgrunden.
+
+Varje session har en kompakt verktygsrad: **Port**, **Baud**, **Connect**,
+**Pause**, **Split log**, **Read-only**, **Diagnostics** och **Flash…**.
+Under den visas en färgad statusetikett (grön = ansluten), USB-bindning och
+loggstatus. Terminalen följs av händelseloggen, filterraden och sändraden.
+
+| Meny | Innehåll |
+|------|----------|
+| **File** | **Open profile** (öppnar profilen i en ny session eller aktiverar en redan öppen), **New profile…** (Ctrl+N), **Save profile** (Ctrl+S), **Save INI as…**, **Export terminal text** (hela bufferten, markering, filtrerade rader), **Open log folder**, **Close session** (Ctrl+W), **Exit** |
+| **Edit** | **Copy**, **Select all**, **Filter lines…** (Ctrl+F), **Clear terminal view** |
+| **View** | **Follow new output**, visa/dölj **Filter bar**, **Send bar** och **Event log** |
+| **Session** | **Connect / Resume** (F5), **Pause** (F6), **Split log** (F7), **Read-only**, **Reconnect automatically**, **Forget USB binding** |
+| **ESP** | **ESP diagnostics…** (F9), **Flash firmware…** |
+| **Settings** | Profilens **Connection…**, **Logging…**, **Terminal…**, **ESP tools…** samt gemensamma **Global settings…** |
+| **Window** | **Tile**, **Cascade**, **Show as tabs**, nästa/föregående session och lista över öppna sessioner |
+| **Help** | **Filter syntax**, **About** (version, INI-sökväg) |
+
+**Split log** stänger den aktuella loggserien och startar direkt en ny utan att
+porten stängs, så ingen mottagen byte går förlorad och enheten återställs inte.
+Byten före delningen hamnar i den gamla filen och byten efter i den nya.
+Terminalen visar en markeringsrad med tid och namnet på den nya loggserien.
+Nya filnamn följer namnmallen; om mallen ger samma namn läggs `-1`, `-2` osv. till.
+Funktionen är aktiv endast när sessionen är ansluten.
+
 ### ESP-diagnostik med esptool
 
 Välj först den officiella, separat installerade `esptool.exe` i
-**Settings… → Connection → Global esptool executable**. Verktyget
-buntas inte med appen. **ESP diagnostics…** kontrollerar verktygets version
-innan det körs och stöder esptool 4.x och 5.x. Spara profilen för att behålla
-sökvägen. Diagnostikvyn har också **Save global esptool path to INI**;
+**Settings → Global settings… → esptool executable**. Verktyget
+buntas inte med appen. **ESP → ESP diagnostics…** kontrollerar verktygets version
+innan det körs och stöder esptool 4.x och 5.x. **Save** i dialogen sparar
+sökvägen direkt i INI-filen. Profilspecifika undantag finns under
+**Settings → ESP tools…**. Diagnostikvyn har också **Save global esptool path to INI**;
 en ändrad sökväg märks **NOT saved** tills du sparar.
 Från 0.26.1 känns även chipraden `Chip type:` i esptool 5.3.1 igen,
 utöver det äldre `Chip is`-formatet. Meddelandet att ESP32-S3 saknar chip-ID
@@ -134,7 +167,7 @@ avgöras tillförlitligt från terminaltrafik; tidigare diagnostik eller
 bootmeddelanden gör inte nästa operation reset-fri.
 
 Porten stängs exklusivt innan esptool startas. Efter avslut eller fel återställs
-den tidigare anslutningsavsikten; **Manual pause** under en operation avbryter
+den tidigare anslutningsavsikten; **Pause** under en operation avbryter
 verktyget och hindrar återanslutning. All inmatning skickas som separata
 `QProcess`-argument, aldrig via ett shell. Diagnostikvyn har bara chip-/flash-ID
 och flashläsningskommandon samt den särskilt granskade flashplanen nedan; det
@@ -243,17 +276,21 @@ bakgrunden. `example.ini` dokumenterar profilnycklar och standardvärden.
 
 ### Loggningsinställningar
 
-**Logging settings…** öppnar direkt loggningsfliken i **Settings…**. Dialogen
-kan öppnas även under pågående anslutning. **Cancel** ändrar ingenting;
+**Settings → Logging…** öppnar profilinställningarna direkt på loggningsfliken.
+Profildialogen har flikarna **Connection**, **Logging**, **Terminal** och
+**ESP tools** och kan öppnas även under pågående anslutning. **Cancel** ändrar ingenting;
 **Apply to session (not saved)** tillämpar ändringarna utan att skriva INI.
-Varje flik har **Save profile to INI (all tabs)**, som sparar samtliga flikar
-och tillämpar dem. Båda pausar sessionen; klicka **Connect / Resume** efteråt.
+**Save profile** sparar samtliga flikar och tillämpar dem. Båda pausar
+sessionen; klicka **Connect / Resume** efteråt.
 
-**PROFILE** markerar inställningar för den namngivna profilen: serialport,
+Profilinställningar gäller den namngivna profilen: serialport,
 eventuella esptool-overrides, loggning och terminalval. De sparas i
-`[profile:namn]`. Tomma esptool-path/chip overrides och baud `0` ärver globalt.
-**GLOBAL** markerar standardloggmapp (`[app]`), esptool-sökväg/chip/baud
-(`[esptool]`) och resetbekräftelse (`[warnings]`), delade av alla profiler.
+`[profile:namn]`. Tomma loggmapp-, esptool-path- och chipfält samt baud `0`
+ärver de globala värdena, som visas som grå text i de tomma fälten.
+**Settings → Global settings…** är en egen dialog för standardloggmapp (`[app]`),
+esptool-sökväg/förväntat chip/baud (`[esptool]`) och resetbekräftelse
+(`[warnings]`), delade av alla profiler. Ändringar där sparas direkt och
+gäller öppna sessioner vid nästa anslutning eller diagnostik.
 Resetvarningen kan stängas av; chipavvikelse blockerar alltid skrivning och
 slutbekräftelsen för flash kan aldrig stängas av.
 **SESSION ONLY** markerar sådant som inte sparas: anslutningstillstånd,
@@ -308,7 +345,7 @@ På loggningsfliken finns följande val:
 
 ### Terminalbuffert, filter och export
 
-**Settings… → Terminal** innehåller antal lagrade terminalrader, kolumngräns
+**Settings → Terminal…** innehåller antal lagrade terminalrader, kolumngräns
 och storlek på terminalens mottagningskö. Standard är 2000 rader, 4096
 kolumner och 262144 byte i kön. Terminalen har dessutom ett fast tak på
 1048576 textceller. Äldre rader kan försvinna ur vyn när gränserna nås;
@@ -318,15 +355,15 @@ minskas tas överskjutande äldre rader/kolumner bort.
 
 Välj **Text** för vanlig bokstavlig textsökning eller **Expression** för
 uttrycken nedan. **Match case** styr skiftlägeskänslighet i både sökord och
-fältnamn. Töm fältet för ofiltrerad vy. **Highlight matches** behåller alla rader
+fältnamn. Töm fältet för ofiltrerad vy. **Edit → Filter lines…** (Ctrl+F) visar filterraden och flyttar markören dit. **Highlight only** behåller alla rader
 med färgmarkerade träffrader; annars visas bara träffarna som oformaterad text.
 Träffräknaren avser raderna i den kvarvarande bufferten, inte hela sessionen.
-**Save profile** sparar filtertext, läge, skiftlägesval och markering per profil.
-**Filter help** visar skrivregler och exempel direkt i programmet.
+**File → Save profile** sparar filtertext, läge, skiftlägesval och markering per profil.
+Knappen **?** på filterraden och **Help → Filter syntax** visar skrivregler och exempel direkt i programmet.
 
-**Save whole buffer…** sparar hela den kvarvarande terminalbufferten, oavsett
-filter. **Save selection…** sparar den markerade texten från vyn.
-**Save filtered rows…** sparar enbart träffande rader. Exporten är en UTF-8-ögonblicksbild
+Under **File → Export terminal text** sparar **Whole terminal buffer…** hela den kvarvarande terminalbufferten, oavsett
+filter. **Selected text…** sparar den markerade texten från vyn.
+**Filtered rows…** sparar enbart träffande rader. Exporten är en UTF-8-ögonblicksbild
 utan ANSI-formatering, inte en exakt råbyte-logg och inte hela sessionens historik
 om äldre rader redan rullat ur bufferten. Råloggning och mottagning fortsätter
 oberoende av filter/export; exporten ändrar aldrig befintliga råloggar.
@@ -443,7 +480,7 @@ paketet startar utan Qt på utvecklings-PATH. Kod-PR:er får artefakter;
 testar också byggflödet.
 
 Vanliga commits publicerar **inte** releaser. Push av en versions-tag
-(`v0.26.2`) eller manuell körning med en befintlig versionstag bygger den
+(`v0.27.0`) eller manuell körning med en befintlig versionstag bygger den
 revisionen och publicerar ZIP/checksummor i ett separat behörighetsbegränsat
 jobb. Manuell körning utan tagg ger enbart artefakt.
 PR-jobbet har inga release-secrets eller skrivbehörigheter.

@@ -34,6 +34,7 @@ public:
     void settingsSaved(const QString &iniPath);
     void cancelCurrent();
     void cancelAndWait();
+    void openFlashPlan();
 signals:
     void saveSettingsRequested();
     void pathChanged(const QString &path);

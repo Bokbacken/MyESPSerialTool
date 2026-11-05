@@ -80,6 +80,7 @@ public slots:
     void finishTool();
     void resume();
     void pause();
+    void splitLog();
     void setReadOnly(bool readOnly);
     void setAutoReconnect(bool enabled);
     void send(const QByteArray &bytes);
@@ -92,6 +93,7 @@ signals:
     void problem(const QString &message);
     void identityBound(const Profile &profile);
     void logFileChanged(const QString &rawPath);
+    void logSplit(const QString &previousBase);
     void sent(const QByteArray &bytes);
     void toolCancelRequested();
 private:
@@ -99,7 +101,7 @@ private:
     std::shared_ptr<DisplayBuffer> display;
     QTimer *pollTimer = nullptr, *writeTimer = nullptr;
     Profile settings;
-    QString logDirectory, lastProblem;
+    QString logDirectory, lastProblem, logBase;
     SessionState current = SessionState::Disconnected;
     int attempts = 0;
     bool initialized = false, opening = false, stopping = false, reconnectAfterLoss = false;

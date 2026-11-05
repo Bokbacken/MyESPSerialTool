@@ -1,6 +1,11 @@
 #include "window.h"
 #include "esptool_dialog.h"
 #include "flashplan_dialog.h"
+#include "main_window.h"
+#include <QAction>
+#include <QMdiArea>
+#include <QMdiSubWindow>
+#include <QMenuBar>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
@@ -70,49 +75,78 @@ class WindowTests : public QObject {
 private slots:
     void initTestCase() {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        QCoreApplication::setApplicationVersion("0.26.2");
+        QCoreApplication::setApplicationVersion("0.27.0");
     }
     void windowTitleIdentifiesRunningVersion() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
-        SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.windowTitle().contains("0.26.2"));
-        QVERIFY(window.windowTitle().endsWith("ESP"));
-        const auto *version = window.findChild<QLabel *>("applicationVersion");
+        MainWindow main(&config);
+        auto *session = main.openSession(config.ini.profiles.first());
+        QVERIFY(main.windowTitle().contains("0.27.0"));
+        QVERIFY(main.windowTitle().contains("ESP"));
+        QVERIFY(session->windowTitle().startsWith("ESP"));
+        const auto *version = main.findChild<QLabel *>("applicationVersion");
         QVERIFY(version);
-        QCOMPARE(version->text(), QString::fromUtf8("Serial ESP Helper — Version 0.26.2"));
+        QCOMPARE(version->text(), QString("Version 0.27.0"));
+    }
+    void mainWindowHostsOneSubWindowPerProfileWithStandardMenus() {
+        AppConfig config; config.ini.path = "unused-smoke-config.ini";
+        Profile first; Profile second; second.name = "Second";
+        config.ini.profiles = {first, second};
+        MainWindow main(&config);
+        auto *a = main.openSession(first);
+        QCOMPARE(main.openSession(first), a);
+        auto *b = main.openSession(second);
+        QVERIFY(a != b);
+        QCOMPARE(main.mdiArea()->subWindowList().size(), 2);
+        QCOMPARE(main.activeSession(), b);
+        QStringList titles;
+        for (auto *menu : main.menuBar()->findChildren<QMenu *>(Qt::FindDirectChildrenOnly))
+            titles << menu->title().remove('&');
+        for (const QString &name : {"File", "Edit", "View", "Session", "ESP", "Settings", "Window", "Help"})
+            QVERIFY2(titles.contains(name), qPrintable(name));
+        QVERIFY(b->action("connectButton")->shortcut() == QKeySequence(Qt::Key_F5));
+        QVERIFY(a->action("connectButton")->shortcut().isEmpty());
+        main.mdiArea()->setActiveSubWindow(main.mdiArea()->subWindowList().first());
+        QCOMPARE(main.activeSession(), a);
+        QVERIFY(a->action("connectButton")->shortcut() == QKeySequence(Qt::Key_F5));
+        QVERIFY(b->action("connectButton")->shortcut().isEmpty());
+        main.mdiArea()->closeActiveSubWindow();
+        QCOMPARE(main.sessions().size(), 1);
+        QCOMPARE(main.activeSession(), b);
     }
     void connectionSettingsFreezeUntilManualPause() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        const QStringList editors = {"profiles", "newProfile", "port", "baud",
-                                      "forgetBinding", "connectButton"};
+        const QStringList editors = {"port", "baud", "forgetBinding", "connectButton"};
         for (const auto state : {SessionState::Waiting, SessionState::Connecting,
                                  SessionState::Connected, SessionState::Loaned}) {
             QVERIFY(QMetaObject::invokeMethod(&window, "applyState", Qt::DirectConnection, Q_ARG(SessionState, state)));
             for (const QString &name : editors) {
-                const auto *editor = window.findChild<QWidget *>(name);
-                QVERIFY2(editor, qPrintable(name)); QVERIFY2(!editor->isEnabled(), qPrintable(name));
+                const auto *editor = window.findChild<QObject *>(name);
+                QVERIFY2(editor, qPrintable(name));
+                QVERIFY2(!editor->property("enabled").toBool(), qPrintable(name));
             }
             QVERIFY(!window.findChild<QPushButton *>("sendButton")->isEnabled());
-            QVERIFY(window.findChild<QCheckBox *>("readOnly")->isEnabled());
-            QVERIFY(window.findChild<QPushButton *>("advanced")->isEnabled());
-            QVERIFY(window.findChild<QCheckBox *>("autoReconnect")->isEnabled());
+            QVERIFY(window.findChild<QAction *>("readOnly")->isEnabled());
+            QVERIFY(window.findChild<QAction *>("advanced")->isEnabled());
+            QVERIFY(window.findChild<QAction *>("autoReconnect")->isEnabled());
         }
         QVERIFY(QMetaObject::invokeMethod(&window, "applyState", Qt::DirectConnection,
                                          Q_ARG(SessionState, SessionState::ManuallyPaused)));
-        for (const QString &name : editors) QVERIFY(window.findChild<QWidget *>(name)->isEnabled());
-        QVERIFY(window.findChild<QCheckBox *>("readOnly")->isChecked());
+        for (const QString &name : editors)
+            QVERIFY(window.findChild<QObject *>(name)->property("enabled").toBool());
+        QVERIFY(window.findChild<QAction *>("readOnly")->isChecked());
     }
     void connectLocksImmediatelyWithoutOpeningUnknownPort() {
         AppConfig config; config.ini.path = "unused-smoke-config.ini";
         Profile p; p.port = "intentionally-absent-serial-test-port";
         config.ini.profiles = {p};
         SessionWindow window(&config, p);
-        auto *connectButton = window.findChild<QPushButton *>("connectButton");
+        auto *connectButton = window.findChild<QAction *>("connectButton");
         QVERIFY(connectButton->isEnabled());
-        connectButton->click();
+        connectButton->trigger();
         QVERIFY(!connectButton->isEnabled());
         QVERIFY(!window.findChild<QComboBox *>("port")->isEnabled());
         QVERIFY(!window.findChild<QComboBox *>("baud")->isEnabled());
@@ -126,7 +160,7 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(&window, "applyState", Qt::DirectConnection,
                                          Q_ARG(SessionState, SessionState::Connected)));
         QVERIFY(send->isEnabled());
-        auto *readOnly = window.findChild<QCheckBox *>("readOnly");
+        auto *readOnly = window.findChild<QAction *>("readOnly");
         readOnly->setChecked(true);
         QVERIFY(!send->isEnabled()); QVERIFY(!window.findChild<QComboBox *>("port")->isEnabled());
         readOnly->setChecked(false);
@@ -220,17 +254,17 @@ private slots:
         config.ini.profiles = {profile};
         auto *serial = new WindowSerial;
         SessionWindow window(&config, profile, serial);
-        window.findChild<QPushButton *>("connectButton")->click();
+        window.findChild<QAction *>("connectButton")->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(),
                                   QString("Connected"), 2000);
-        window.findChild<QPushButton *>("esptoolDiagnostics")->click();
+        window.findChild<QAction *>("esptoolDiagnostics")->trigger();
         auto *dialog = window.findChild<EsptoolDialog *>();
         QVERIFY(dialog);
         acceptResetWarning(dialog);
         dialog->findChild<QPushButton *>("chipFlashInfo")->click();
         QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QLabel *>("esptoolStatus")
             ->text().contains("Running chip-id"), 5000);
-        window.findChild<QPushButton *>("pauseButton")->click();
+        window.findChild<QAction *>("pauseButton")->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(),
                                   QString("Manually paused"), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QLabel *>("esptoolStatus")
@@ -788,9 +822,9 @@ private slots:
             dialog->findChild<QLineEdit *>("displayQueueBytes")->setText("4096");
             dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
         });
-        window.findChild<QPushButton *>("logSettings")->click();
-        window.findChild<QCheckBox *>("autoReconnect")->setChecked(false);
-        window.findChild<QPushButton *>("saveProfile")->click();
+        window.findChild<QAction *>("logSettings")->trigger();
+        window.findChild<QAction *>("autoReconnect")->setChecked(false);
+        window.findChild<QAction *>("saveProfile")->trigger();
         IniFile restored;
         QVERIFY2(restored.load(config.ini.path, error), qPrintable(error));
         const auto p = restored.profiles.first();
@@ -806,9 +840,9 @@ private slots:
         AppConfig config; config.ini.path = directory.filePath("settings.ini");
         config.ini.profiles = {Profile{}};
         SessionWindow window(&config, config.ini.profiles.first());
-        QVERIFY(window.findChild<QPushButton *>("saveBuffer")->isEnabled());
-        auto *selection = window.findChild<QPushButton *>("saveSelection");
-        auto *filtered = window.findChild<QPushButton *>("saveFiltered");
+        QVERIFY(window.findChild<QAction *>("saveBuffer")->isEnabled());
+        auto *selection = window.findChild<QAction *>("saveSelection");
+        auto *filtered = window.findChild<QAction *>("saveFiltered");
         QVERIFY(!selection->isEnabled()); QVERIFY(!filtered->isEnabled());
         window.findChild<QLineEdit *>("terminalFilter")->setText("error");
         QVERIFY(filtered->isEnabled());
@@ -827,7 +861,7 @@ private slots:
             dialog->selectFile(output);
             QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
         });
-        selection->click();
+        selection->trigger();
         QFile saved(output); QVERIFY(saved.open(QIODevice::ReadOnly));
         QCOMPARE(saved.readAll(), QByteArray("irst\nsec"));
         cursor.clearSelection(); terminal->setTextCursor(cursor);
@@ -838,13 +872,13 @@ private slots:
         AppConfig config; QString error;
         QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
         SessionWindow window(&config, config.ini.profiles.first());
-        for (int tab = 0; tab < 3; ++tab) {
+        for (int tab = 0; tab < 4; ++tab) {
             QTimer::singleShot(0, &window, [&, tab] {
                 auto *dialog = window.findChild<QDialog *>();
                 QVERIFY(dialog);
-                QVERIFY(dialog->findChild<QLabel *>("settingsScope")->text().contains("GLOBAL fields"));
-                for (int page = 0; page < 3; ++page)
-                    QVERIFY(dialog->findChild<QPushButton *>(QString("saveSettings%1").arg(page)));
+                QVERIFY(dialog->findChild<QLabel *>("settingsScope")->text().contains("Global settings"));
+                QCOMPARE(dialog->findChild<QTabWidget *>()->count(), 4);
+                QVERIFY(!dialog->findChild<QLineEdit *>("globalEsptoolPath"));
                 dialog->findChild<QTabWidget *>()->setCurrentIndex(tab);
                 dialog->findChild<QLineEdit *>("esptoolPath")->setText("C:/Tools/esptool.exe");
                 dialog->findChild<QLineEdit *>("logExtension")->setText(".bin");
@@ -860,9 +894,9 @@ private slots:
                 dialog->findChild<QCheckBox *>("textTimestamp")->setChecked(true);
                 dialog->findChild<QCheckBox *>("terminalTimestamp")->setChecked(true);
                 dialog->findChild<QCheckBox *>("timestampMilliseconds")->setChecked(true);
-                dialog->findChild<QPushButton *>(QString("saveSettings%1").arg(tab))->click();
+                dialog->findChild<QPushButton *>("saveSettings")->click();
             });
-            window.findChild<QPushButton *>("advanced")->click();
+            window.findChild<QAction *>("advanced")->trigger();
             IniFile restored; QVERIFY(restored.load(config.ini.path, error));
             const auto &p = restored.profiles.first();
             QCOMPARE(p.esptoolPath, QString("C:/Tools/esptool.exe"));
@@ -876,15 +910,79 @@ private slots:
             dialog->findChild<QLineEdit *>("esptoolPath")->setText("not-saved.exe");
             dialog->reject();
         });
-        window.findChild<QPushButton *>("advanced")->click();
+        window.findChild<QAction *>("advanced")->trigger();
         QCOMPARE(config.ini.profiles.first().esptoolPath, QString("C:/Tools/esptool.exe"));
+    }
+    void globalSettingsAreSeparateAndSharedByProfiles() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; QString error;
+        QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
+        MainWindow main(&config);
+        auto *session = main.openSession(config.ini.profiles.first());
+        QSignalSpy changed(&config, &AppConfig::globalsChanged);
+        QTimer::singleShot(0, &main, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            QCOMPARE(dialog->objectName(), QString("globalSettings"));
+            dialog->findChild<QLineEdit *>("defaultLogDirectory")->setText(directory.filePath("shared"));
+            dialog->findChild<QLineEdit *>("globalEsptoolPath")->setText("C:/Tools/esptool.exe");
+            auto *chip = dialog->findChild<QComboBox *>("globalEsptoolChip");
+            chip->setCurrentIndex(chip->findData("esp32s3"));
+            dialog->findChild<QComboBox *>("globalEsptoolBaud")->setCurrentText("921600");
+            dialog->findChild<QCheckBox *>("confirmReset")->setChecked(false);
+            dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->click();
+        });
+        main.findChild<QAction *>("globalSettingsAction")->trigger();
+        QCOMPARE(changed.count(), 1);
+        IniFile restored; QVERIFY(restored.load(config.ini.path, error));
+        QCOMPARE(restored.defaultLogDirectory, directory.filePath("shared"));
+        QCOMPARE(restored.esptoolPath, QString("C:/Tools/esptool.exe"));
+        QCOMPARE(restored.esptoolDefaultChip, QString("esp32s3"));
+        QCOMPARE(restored.esptoolBaud, 921600);
+        QVERIFY(!restored.confirmReset);
+        QVERIFY(restored.profiles.first().logDirectory.isEmpty());
+        QVERIFY(session->findChild<QLabel *>("logStatus")->text().contains(directory.filePath("shared")));
+    }
+    void splitLogStartsNewLogSetWithoutDisconnecting() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        AppConfig config; config.ini.path = directory.filePath("settings.ini");
+        Profile p; p.port = "TEST"; p.logging = true; p.logMode = "raw";
+        p.logDirectory = directory.path(); p.logName = "{profile}";
+        config.ini.profiles = {p};
+        auto *serial = new WindowSerial;
+        SessionWindow window(&config, p, serial);
+        auto *split = window.action("splitLog");
+        QVERIFY(!split->isEnabled());
+        window.action("connectButton")->trigger();
+        QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"));
+        QVERIFY(split->isEnabled());
+        QMetaObject::invokeMethod(serial, [serial] { emit serial->received("before split\n"); },
+                                  Qt::QueuedConnection);
+        auto *view = window.findChild<QTextEdit *>("terminal");
+        QTRY_VERIFY(view->toPlainText().contains("before split"));
+        split->trigger();
+        QTRY_VERIFY(window.findChild<QPlainTextEdit *>("events")->toPlainText().contains("Log split"));
+        QVERIFY(serial->opened);
+        QCOMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"));
+        QMetaObject::invokeMethod(serial, [serial] { emit serial->received("after split\n"); },
+                                  Qt::QueuedConnection);
+        QTRY_VERIFY(view->toPlainText().contains("after split"));
+        QVERIFY(view->toPlainText().contains("log split"));
+        window.action("pauseButton")->trigger();
+        QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Manually paused"));
+        auto logs = QDir(directory.path()).entryList({"*.raw"}, QDir::Files, QDir::Name);
+        QCOMPARE(logs, QStringList({"ESP-1.raw", "ESP.raw"}));
+        QFile first(directory.filePath("ESP.raw")); QVERIFY(first.open(QIODevice::ReadOnly));
+        QCOMPARE(first.readAll(), QByteArray("before split\n"));
+        QFile second(directory.filePath("ESP-1.raw")); QVERIFY(second.open(QIODevice::ReadOnly));
+        QCOMPARE(second.readAll(), QByteArray("after split\n"));
     }
     void diagnosticsSavePathSurvivesReload() {
         QTemporaryDir directory; QVERIFY(directory.isValid());
         AppConfig config; QString error;
         QVERIFY(config.ini.load(directory.filePath("settings.ini"), error));
         SessionWindow window(&config, config.ini.profiles.first());
-        window.findChild<QPushButton *>("esptoolDiagnostics")->click();
+        window.findChild<QAction *>("esptoolDiagnostics")->trigger();
         auto *dialog = window.findChild<EsptoolDialog *>();
         QVERIFY(dialog);
         dialog->findChild<QLineEdit *>("esptoolPath")->setText("C:/Tools/esptool.exe");
@@ -905,7 +1003,7 @@ private slots:
         config.ini.profiles = {p};
         auto *serial = new WindowSerial;
         SessionWindow window(&config, p, serial);
-        window.findChild<QPushButton *>("connectButton")->click();
+        window.findChild<QAction *>("connectButton")->trigger();
         QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"));
         QMetaObject::invokeMethod(serial, [serial] { emit serial->received("info\nerror temp=23\n"); },
                                   Qt::QueuedConnection);
@@ -914,7 +1012,7 @@ private slots:
         window.findChild<QLineEdit *>("terminalFilter")->setText("error");
         QVERIFY(view->toPlainText().contains("UTC] error temp=23"));
         QVERIFY(!view->toPlainText().contains("info"));
-        window.findChild<QPushButton *>("pauseButton")->click();
+        window.findChild<QAction *>("pauseButton")->trigger();
         QTRY_COMPARE(window.findChild<QLabel *>("sessionState")->text(), QString("Manually paused"));
         const auto logs = QDir(directory.path()).entryList({"*.raw"}, QDir::Files);
         QCOMPARE(logs.size(), 1);
@@ -929,7 +1027,7 @@ private slots:
         config.ini.profiles = {p};
         auto *serial = new WindowSerial;
         SessionWindow window(&config, p, serial);
-        window.findChild<QPushButton *>("connectButton")->click();
+        window.findChild<QAction *>("connectButton")->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLabel *>("sessionState")->text(), QString("Connected"), 2000);
         QMetaObject::invokeMethod(serial, [serial] {
             emit serial->received("info temp=1\nerror flash temp=23\nerror timeout temp=5\n");
@@ -953,17 +1051,17 @@ private slots:
             QVERIFY(dialog); dialog->selectFile(output);
             QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
         });
-        window.findChild<QPushButton *>("saveFiltered")->click();
+        window.findChild<QAction *>("saveFiltered")->trigger();
         QFile saved(output); QVERIFY(saved.open(QIODevice::ReadOnly));
         QCOMPARE(saved.readAll(), QByteArray("error flash temp=23"));
-        window.findChild<QPushButton *>("saveProfile")->click();
+        window.findChild<QAction *>("saveProfile")->trigger();
         IniFile restored; QVERIFY(restored.load(config.ini.path, error));
         QCOMPARE(restored.profiles.first().filterMode, QString("expression"));
         QCOMPARE(restored.profiles.first().filterText, query->text());
         QVERIFY(restored.profiles.first().filterHighlight);
         query->setText("\"error\" &&");
         QVERIFY(count->text().startsWith("Position "));
-        QVERIFY(!window.findChild<QPushButton *>("saveFiltered")->isEnabled());
+        QVERIFY(!window.findChild<QAction *>("saveFiltered")->isEnabled());
         QVERIFY(terminal->toPlainText().contains("info temp=1"));
         QVERIFY(terminal->extraSelections().isEmpty());
         query->setText("\"nomatch\"");

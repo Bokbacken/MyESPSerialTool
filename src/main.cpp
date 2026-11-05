@@ -1,8 +1,9 @@
-#include "window.h"
+#include "main_window.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QTimer>
 #include <QStandardPaths>
@@ -10,14 +11,14 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Serial ESP Helper");
-    QCoreApplication::setApplicationVersion("0.26.2");
+    QCoreApplication::setApplicationVersion("0.27.0");
     qRegisterMetaType<Profile>();
     qRegisterMetaType<SessionState>();
     QCommandLineParser parser;
     parser.setApplicationDescription("Multi-window serial terminal; no network access.");
     parser.addHelpOption(); parser.addVersionOption();
     parser.addOption({{"c", "config"}, "Explicit INI file path", "file"});
-    parser.addOption({"smoke-test", "Open two disconnected windows, verify controls, then exit without saving"});
+    parser.addOption({"smoke-test", "Open two disconnected sessions, verify the main window, then exit without saving"});
     parser.process(app);
     const bool smoke = parser.isSet("smoke-test");
     const QString defaultPath = QDir(QCoreApplication::applicationDirPath()).filePath("SerialESPHelper.ini");
@@ -46,11 +47,14 @@ int main(int argc, char **argv) {
             error + "\nSelect an explicit configuration file; no silent relocation.");
         if (!config.chooseFile(nullptr)) return 2;
     }
-    auto *first = new SessionWindow(&config, config.ini.profiles.first()); first->show();
+    MainWindow window(&config);
+    window.openSession(config.ini.profiles.first());
+    window.show();
     if (smoke) {
-        auto *second = new SessionWindow(&config, config.ini.profiles.first()); second->show();
-        QTimer::singleShot(250, &app, [&app, first, second] {
-            first->close(); second->close(); app.exit(0);
+        window.openSession(config.ini.profiles.first(), nullptr, false);
+        QTimer::singleShot(250, &app, [&app, &window] {
+            const bool ok = window.sessions().size() == 2 && window.findChild<QMenuBar *>();
+            window.close(); app.exit(ok ? 0 : 1);
         });
     }
     return app.exec();
