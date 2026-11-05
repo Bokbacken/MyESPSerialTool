@@ -7,6 +7,7 @@ on:
       - 'tests/**'
       - 'CMakeLists.txt'
       - 'example.ini'
+      - 'packaging/**'
       - '.github/workflows/build.yaml'
   push:
     branches: [main, master]
@@ -16,6 +17,7 @@ on:
       - 'tests/**'
       - 'CMakeLists.txt'
       - 'example.ini'
+      - 'packaging/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
@@ -51,7 +53,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
-            throw 'Release tag must have the form v0.22.0.'
+            throw 'Release tag must have the form v0.26.0.'
           }
           git show-ref --verify "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE) { throw 'The release tag must already exist.' }
@@ -121,11 +123,34 @@ jobs:
           if (!$app.WaitForExit(15000)) { $app.Kill(); throw 'Packaged GUI did not exit.' }
           if ($app.ExitCode -ne 0) { throw "Packaged GUI failed: $($app.ExitCode)" }
 
-      - name: Create portable ZIP and SHA-256 checksum
+      - name: Build per-user MSI with pinned WiX
+        run: |
+          dotnet tool install wix --version 5.0.2 --tool-path .wix-tools
+          if ($LASTEXITCODE) { throw 'WiX installation failed.' }
+          $wix = "$pwd/.wix-tools/wix.exe"
+          & $wix extension add WixToolset.UI.wixext/5.0.2
+          if ($LASTEXITCODE) { throw 'WiX UI extension installation failed.' }
+          $cmake = Get-Content CMakeLists.txt -Raw
+          if ($cmake -notmatch 'project\(SerialESPHelper VERSION (\d+)\.(\d+)\.(\d+)') {
+            throw 'Application version not found.'
+          }
+          $version = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          $upgradeVersion = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+          ./packaging/build-msi.ps1 -PackageDirectory package -Version $version -OutputPath SerialESPHelper-windows-x64.msi -Wix $wix
+          ./packaging/build-msi.ps1 -PackageDirectory package -Version $upgradeVersion -OutputPath msi-test/upgrade.msi -Wix $wix
+
+      - name: Verify MSI install upgrade and user data preservation
+        run: |
+          ./packaging/test-msi.ps1 -Installer SerialESPHelper-windows-x64.msi -UpgradeInstaller msi-test/upgrade.msi -LogDirectory msi-test/logs
+
+      - name: Create portable ZIP and SHA-256 checksums
         run: |
           Compress-Archive -Path package/* -DestinationPath SerialESPHelper-windows-x64.zip
-          $hash = (Get-FileHash SerialESPHelper-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  SerialESPHelper-windows-x64.zip" | Set-Content SHA256SUMS.txt -Encoding ascii
+          $checksums = foreach ($file in @('SerialESPHelper-windows-x64.zip', 'SerialESPHelper-windows-x64.msi')) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $file"
+          }
+          $checksums | Set-Content SHA256SUMS.txt -Encoding ascii
 
       - name: Upload portable deliverable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -133,6 +158,7 @@ jobs:
           name: SerialESPHelper-windows-x64
           path: |
             SerialESPHelper-windows-x64.zip
+            SerialESPHelper-windows-x64.msi
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
@@ -160,6 +186,6 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag'; exit 1; }
           gh run download "$RUN_ID" --name SerialESPHelper-windows-x64 --dir assets
           (cd assets && sha256sum -c SHA256SUMS.txt)
-          gh release create "$RELEASE_TAG" assets/SerialESPHelper-windows-x64.zip assets/SHA256SUMS.txt \
+          gh release create "$RELEASE_TAG" assets/SerialESPHelper-windows-x64.zip assets/SerialESPHelper-windows-x64.msi assets/SHA256SUMS.txt \
             --verify-tag --title "Serial ESP Helper $RELEASE_TAG" \
-            --notes 'Portable unsigned Windows x64 build. See the bundled guide for remaining hardware acceptance tests.'
+            --notes 'Unsigned Windows x64 portable ZIP and per-user MSI. The MSI preserves user INI/logs. See the bundled guide for remaining hardware acceptance tests.'

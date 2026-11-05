@@ -1,4 +1,6 @@
 #include "window.h"
+#include "esptool_dialog.h"
+#include "flashplan.h"
 #include <QCoreApplication>
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -23,6 +25,11 @@
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QTabWidget>
+#include <QToolBar>
+#include <QToolButton>
+#include <QSplitter>
+#include <QGroupBox>
+#include <QAction>
 #include <QTextEdit>
 #include <QTextCursor>
 #include <QTextBlock>
@@ -64,180 +71,374 @@ bool AppConfig::saveProfile(const Profile &profile, QWidget *parent) {
     emit profilesChanged(); return true;
 }
 
+void showFilterHelp(QWidget *parent) {
+    QMessageBox help(parent);
+    help.setWindowTitle("Line filters");
+    help.setTextFormat(Qt::PlainText);
+    help.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    help.setText("Text mode: literal substring search.\n"
+        "Expression mode: quoted search terms, ! (NOT), && (AND), || (OR), parentheses.\n"
+        "Precedence: ! then && then ||.\n"
+        "Example: (\"error*flash\" || \"warn??\") && !\"ignored\"\n"
+        "? = one Unicode character; * = zero or more characters, on the same line.\n"
+        "Escapes inside quotes: \\? \\* \\\" \\\\ (literal ?, *, quote, backslash).\n\n"
+        "Numeric fields: temp >= 20 && temp < 30 matches temp=23.5 or temp: 23.5.\n"
+        "Position: number(2) >= -1.5e2 selects the second standalone number (1-based).\n"
+        "Comparisons: < <= == != >= >. Decimal point, optional sign/exponent.\n"
+        "Missing/invalid numbers never satisfy comparisons (including !=).\n"
+        "For a repeated field name, the first valid numeric assignment is used.\n"
+        "Numbers must be standalone; 32 in ESP32 and 23 in 23C are not numbers.\n"
+        "Combine text/numeric tests: \"sensor*\" && voltage >= 3.1.\n\n"
+        "Match case applies to text and field names. Empty filter matches all.\n"
+        "File > Save profile stores this filter. Invalid syntax disables filtered export.\n"
+        "Highlight keeps all rows visible; filtered export still saves only matches.\n"
+        "Filters/export use the retained terminal buffer, never change the raw log.\n"
+        "Saved filters follow INI rules: no leading/trailing whitespace or whitespace before ;/#.\n"
+        "Expressions: up to 4096 characters, 128 terms/operators, 32 nesting levels.");
+    help.exec();
+}
+
+bool AppConfig::editGlobalSettings(QWidget *parent) {
+    QDialog dialog(parent);
+    dialog.setObjectName("globalSettings");
+    dialog.setWindowTitle("Global settings");
+    dialog.resize(680, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *scope = new QLabel("Shared by all profiles and sessions. A profile can override the log folder "
+                             "and esptool values under Settings > Profile.\nINI file: " + ini.path);
+    scope->setObjectName("globalScope");
+    scope->setWordWrap(true);
+    scope->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(scope);
+    auto *logs = new QGroupBox("Logging");
+    auto *logForm = new QFormLayout(logs);
+    auto *logDirectory = new QLineEdit(ini.defaultLogDirectory);
+    logDirectory->setObjectName("defaultLogDirectory");
+    auto *browseLogs = new QPushButton("Browse…");
+    auto *logRow = new QHBoxLayout; logRow->addWidget(logDirectory, 1); logRow->addWidget(browseLogs);
+    logForm->addRow("Default log folder", logRow);
+    layout->addWidget(logs);
+    auto *esp = new QGroupBox("ESP tools (esptool)");
+    auto *espForm = new QFormLayout(esp);
+    auto *path = new QLineEdit(ini.esptoolPath);
+    path->setObjectName("globalEsptoolPath");
+    path->setPlaceholderText("Empty = esptool found on PATH");
+    auto *browseTool = new QPushButton("Browse…");
+    auto *toolRow = new QHBoxLayout; toolRow->addWidget(path, 1); toolRow->addWidget(browseTool);
+    espForm->addRow("esptool executable", toolRow);
+    auto *chip = new QComboBox;
+    chip->setObjectName("globalEsptoolChip");
+    chip->addItem("Any chip (no expectation)", QString());
+    for (const auto &name : FlashPlan::supportedChips()) chip->addItem(name, name);
+    chip->setCurrentIndex(qMax(0, chip->findData(ini.esptoolDefaultChip)));
+    espForm->addRow("Expected chip", chip);
+    auto *baud = new QComboBox;
+    baud->setObjectName("globalEsptoolBaud");
+    baud->setEditable(true);
+    for (int rate : {115200, 230400, 460800, 921600, 1500000, 2000000}) baud->addItem(QString::number(rate));
+    baud->setCurrentText(QString::number(ini.esptoolBaud));
+    espForm->addRow("esptool baud", baud);
+    layout->addWidget(esp);
+    auto *warnings = new QGroupBox("Warnings");
+    auto *warningForm = new QVBoxLayout(warnings);
+    auto *confirmReset = new QCheckBox("Ask before diagnostics that may reset the device");
+    confirmReset->setObjectName("confirmReset");
+    confirmReset->setChecked(ini.confirmReset);
+    warningForm->addWidget(confirmReset);
+    auto *fixed = new QLabel("Wrong-chip blocks and the final flash confirmation cannot be disabled.");
+    fixed->setWordWrap(true);
+    warningForm->addWidget(fixed);
+    layout->addWidget(warnings);
+    layout->addStretch();
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
+    layout->addWidget(buttons);
+    connect(browseLogs, &QPushButton::clicked, &dialog, [&] {
+        const QString selected = QFileDialog::getExistingDirectory(&dialog, "Default log folder",
+            QDir(QFileInfo(ini.path).absolutePath()).absoluteFilePath(logDirectory->text()));
+        if (!selected.isEmpty()) logDirectory->setText(selected);
+    });
+    connect(browseTool, &QPushButton::clicked, &dialog, [&] {
+        const QString selected = QFileDialog::getOpenFileName(&dialog, "esptool executable", path->text());
+        if (!selected.isEmpty()) path->setText(selected);
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        const auto unsafe = [](const QString &value) {
+            return value != value.trimmed() || value.size() > 4096
+                || value.contains(QRegularExpression("[\\r\\n\\x00]"))
+                || value.contains(QRegularExpression("\\s[;#]"));
+        };
+        quint64 baudValue = 0;
+        if (unsafe(path->text()) || logDirectory->text().trimmed().isEmpty() || unsafe(logDirectory->text())
+            || !FlashPlan::parseNumber(baud->currentText(), baudValue)
+            || baudValue < 1200 || baudValue > 4000000) {
+            QMessageBox::warning(&dialog, "Invalid global settings",
+                "Check the esptool path, baud (1200–4000000) and log folder. Paths cannot have surrounding "
+                "spaces, line breaks or whitespace before ; or #.");
+            return;
+        }
+        const IniFile previous = ini;
+        ini.defaultLogDirectory = logDirectory->text();
+        ini.esptoolPath = path->text();
+        ini.esptoolDefaultChip = chip->currentData().toString();
+        ini.esptoolBaud = int(baudValue);
+        ini.confirmReset = confirmReset->isChecked();
+        QString error;
+        if (!ini.save(error)) {
+            ini = previous;
+            QMessageBox::critical(&dialog, "Global settings not saved", error);
+            return;
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted) return false;
+    emit globalsChanged();
+    return true;
+}
+
+static QString stateStyle(SessionState s) {
+    QString color = "#6c757d";
+    if (s == SessionState::Connected) color = "#1e7e34";
+    else if (s == SessionState::Waiting || s == SessionState::Connecting) color = "#a66a00";
+    else if (s == SessionState::Loaned) color = "#6f42c1";
+    return QString("QLabel { background:%1; color:white; border-radius:3px; padding:2px 8px; font-weight:bold; }")
+        .arg(color);
+}
+
+QAction *SessionWindow::makeAction(const QString &name, const QString &text, const QKeySequence &key) {
+    auto *created = new QAction(text, this);
+    created->setObjectName(name);
+    if (!key.isEmpty()) shortcuts.insert(created, key);
+    return created;
+}
+QAction *SessionWindow::action(const QString &name) const {
+    return findChild<QAction *>(name, Qt::FindDirectChildrenOnly);
+}
+void SessionWindow::setShortcutsActive(bool active) {
+    // Only the active MDI session owns shortcuts, so F5 etc. never act on a background session.
+    for (auto it = shortcuts.cbegin(); it != shortcuts.cend(); ++it)
+        it.key()->setShortcut(active ? it.value() : QKeySequence());
+}
+
 SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *transport)
     : config(c), settings(p), display(std::make_shared<DisplayBuffer>()),
       worker(new SessionWorker(display, transport)) {
-    setAttribute(Qt::WA_DeleteOnClose);
-    resize(1050, 760);
-    auto *central = new QWidget(this);
-    auto *layout = new QVBoxLayout(central);
-    auto *profileRow = new QHBoxLayout;
-    profiles = new QComboBox;
-    profiles->setObjectName("profiles");
-    auto *newProfile = new QPushButton("New profile");
-    newProfile->setObjectName("newProfile");
-    auto *save = new QPushButton("Save profile");
-    save->setObjectName("saveProfile");
-    auto *newWindow = new QPushButton("New window");
-    auto *chooseConfig = new QPushButton("Save INI as…");
-    profileRow->addWidget(new QLabel("Profile")); profileRow->addWidget(profiles, 1);
-    profileRow->addWidget(newProfile); profileRow->addWidget(save);
-    profileRow->addWidget(newWindow); profileRow->addWidget(chooseConfig);
-    layout->addLayout(profileRow);
-    auto *connectionRow = new QHBoxLayout;
+    resize(1000, 700);
+    auto *saveProfile = makeAction("saveProfile", "&Save profile", QKeySequence::Save);
+    saveProfile->setStatusTip("Write this session's profile settings to the INI file");
+    auto *saveBuffer = makeAction("saveBuffer", "Whole terminal &buffer…");
+    saveSelection = makeAction("saveSelection", "&Selected text…");
+    saveSelection->setEnabled(false);
+    saveFiltered = makeAction("saveFiltered", "&Filtered rows…");
+    saveFiltered->setEnabled(false);
+    auto *openLogs = makeAction("openLogFolder", "Open &log folder");
+    auto *copy = makeAction("copyText", "&Copy", QKeySequence::Copy);
+    copy->setEnabled(false);
+    auto *selectAll = makeAction("selectAll", "Select &all", QKeySequence::SelectAll);
+    auto *find = makeAction("findFilter", "&Filter lines…", QKeySequence::Find);
+    auto *clear = makeAction("clearView", "C&lear terminal view");
+    clear->setStatusTip("Clears only the rendered view; reception and log files continue unchanged");
+    follow = makeAction("follow", "&Follow new output");
+    follow->setCheckable(true);
+    auto *showFilter = makeAction("showFilterBar", "Filter &bar");
+    auto *showSend = makeAction("showSendBar", "&Send bar");
+    auto *showEvents = makeAction("showEvents", "&Event log");
+    for (auto *toggle : {showFilter, showSend, showEvents}) { toggle->setCheckable(true); toggle->setChecked(true); }
+    connectAction = makeAction("connectButton", "&Connect / Resume", Qt::Key_F5);
+    connectAction->setIconText("Connect");
+    auto *pause = makeAction("pauseButton", "&Pause (release port)", Qt::Key_F6);
+    pause->setIconText("Pause");
+    pause->setStatusTip("Disconnects, releases the port and blocks reconnect until Connect / Resume");
+    splitAction = makeAction("splitLog", "Spli&t log (start new log set)", Qt::Key_F7);
+    splitAction->setIconText("Split log");
+    splitAction->setToolTip("Close the current log files and start a new log set without disconnecting");
+    splitAction->setEnabled(false);
+    readOnly = makeAction("readOnly", "&Read-only (block sending)");
+    readOnly->setIconText("Read-only");
+    readOnly->setCheckable(true);
+    autoReconnect = makeAction("autoReconnect", "Reconnect &automatically after connection loss");
+    autoReconnect->setCheckable(true);
+    auto *forget = makeAction("forgetBinding", "&Forget USB binding");
+    auto *diagnostics = makeAction("esptoolDiagnostics", "ESP &diagnostics…", Qt::Key_F9);
+    diagnostics->setIconText("Diagnostics");
+    auto *flash = makeAction("flashFirmware", "&Flash firmware…");
+    flash->setIconText("Flash…");
+    auto *connectionSettings = makeAction("advanced", "&Connection…");
+    auto *loggingSettings = makeAction("logSettings", "&Logging…");
+    auto *terminalSettings = makeAction("terminalSettings", "&Terminal…");
+    auto *espSettings = makeAction("espSettings", "&ESP tools…");
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(4);
+    auto *bar = new QToolBar;
+    bar->setObjectName("sessionToolbar");
+    bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     port = new QComboBox; port->setEditable(true); port->setObjectName("port");
+    port->setMinimumContentsLength(12);
+    port->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     baud = new QComboBox; baud->setEditable(true); baud->setObjectName("baud");
     for (int rate : {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600})
         baud->addItem(QString::number(rate));
-    readOnly = new QCheckBox("Read-only");
-    readOnly->setObjectName("readOnly");
-    auto *advancedButton = new QPushButton("Settings…");
-    advancedButton->setObjectName("advanced");
-    auto *connectButton = new QPushButton("Connect / Resume");
-    connectButton->setObjectName("connectButton");
-    auto *pauseButton = new QPushButton("Manual pause");
-    connectionRow->addWidget(new QLabel("Port")); connectionRow->addWidget(port, 1);
-    connectionRow->addWidget(new QLabel("Baud")); connectionRow->addWidget(baud);
-    connectionRow->addWidget(readOnly); connectionRow->addWidget(advancedButton);
-    connectionRow->addWidget(connectButton); connectionRow->addWidget(pauseButton);
-    layout->addLayout(connectionRow);
-    autoReconnect = new QCheckBox("Reconnect automatically after connection loss");
-    autoReconnect->setObjectName("autoReconnect");
-    layout->addWidget(autoReconnect);
-    auto *identityRow = new QHBoxLayout;
-    identity = new QLabel; identity->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto *forget = new QPushButton("Forget USB binding");
-    forget->setObjectName("forgetBinding");
-    connectionEditors = {profiles, newProfile, port, baud, forget, connectButton};
-    identityRow->addWidget(identity, 1); identityRow->addWidget(forget);
-    layout->addLayout(identityRow);
+    bar->addWidget(new QLabel("Port "));
+    bar->addWidget(port);
+    bar->addWidget(new QLabel("  Baud "));
+    bar->addWidget(baud);
+    bar->addSeparator();
+    bar->addAction(connectAction);
+    bar->addAction(pause);
+    bar->addAction(splitAction);
+    bar->addSeparator();
+    bar->addAction(readOnly);
+    auto *spacer = new QWidget;
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    bar->addWidget(spacer);
+    bar->addAction(diagnostics);
+    bar->addAction(flash);
+    layout->addWidget(bar);
+
+    auto *infoRow = new QHBoxLayout;
     status = new QLabel("Disconnected"); status->setObjectName("sessionState");
-    layout->addWidget(status);
+    status->setStyleSheet(stateStyle(SessionState::Disconnected));
+    identity = new QLabel; identity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    identity->setObjectName("usbIdentity");
+    auto *followButton = new QToolButton;
+    followButton->setDefaultAction(follow);
+    followButton->setText("Follow output");
+    infoRow->addWidget(status);
+    infoRow->addWidget(identity, 1);
+    infoRow->addWidget(followButton);
+    layout->addLayout(infoRow);
     logStatus = new QLabel("Raw logging disabled"); logStatus->setObjectName("logStatus");
-    logStatus->setWordWrap(true); layout->addWidget(logStatus);
+    logStatus->setWordWrap(true);
     logStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto *logTools = new QHBoxLayout;
-    auto *logSettings = new QPushButton("Logging settings…");
-    logSettings->setObjectName("logSettings");
-    auto *openLogs = new QPushButton("Open log folder");
-    logTools->addWidget(logSettings); logTools->addWidget(openLogs); logTools->addStretch();
-    layout->addLayout(logTools);
-    connect(logSettings, &QPushButton::clicked, this, [this] { advanced(1); });
-    connect(openLogs, &QPushButton::clicked, this, [this] {
-        const auto directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(settings.logDirectory);
-        if (!QDir().mkpath(directory) || !QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
-            addEvent("Cannot open log folder: " + directory);
-    });
+    layout->addWidget(logStatus);
+
     view = new QTextEdit; view->setReadOnly(true); view->setObjectName("terminal");
     view->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     view->setLineWrapMode(QTextEdit::NoWrap);
     view->setStyleSheet("QTextEdit { background:#151515; color:#dddddd; }");
-    layout->addWidget(view, 1);
-    auto *tools = new QHBoxLayout;
-    follow = new QCheckBox("Follow scroll (receiving never paused)");
-    auto *clear = new QPushButton("Clear rendered view (raw logs unchanged)");
-    tools->addWidget(follow); tools->addStretch(); tools->addWidget(clear);
-    layout->addLayout(tools);
-    auto *exportRow = new QHBoxLayout;
+    events = new QPlainTextEdit; events->setReadOnly(true);
+    events->setMaximumBlockCount(200);
+    events->setObjectName("events");
+    events->setPlaceholderText("Session events");
+    auto *splitter = new QSplitter(Qt::Vertical);
+    splitter->setObjectName("terminalSplitter");
+    splitter->addWidget(view);
+    splitter->addWidget(events);
+    splitter->setStretchFactor(0, 5);
+    splitter->setStretchFactor(1, 1);
+    splitter->setCollapsible(0, false);
+    splitter->setSizes({560, 110});
+    layout->addWidget(splitter, 1);
+
+    filterBar = new QWidget;
+    filterBar->setObjectName("filterBar");
+    auto *filterLayout = new QVBoxLayout(filterBar);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    auto *filterRow = new QHBoxLayout;
     terminalFilter = new QLineEdit;
     terminalFilter->setObjectName("terminalFilter"); terminalFilter->setMaxLength(4096);
-    terminalFilter->setPlaceholderText("Show lines containing text (raw logs are unchanged)");
+    terminalFilter->setClearButtonEnabled(true);
     filterCase = new QCheckBox("Match case");
     filterCase->setObjectName("filterCase");
     filterMode = new QComboBox;
     filterMode->setObjectName("filterMode"); filterMode->addItems({"Text", "Expression"});
-    filterHighlight = new QCheckBox("Highlight matches");
+    filterHighlight = new QCheckBox("Highlight only");
+    filterHighlight->setToolTip("Keep all rows visible and highlight matches");
     filterHighlight->setObjectName("filterHighlight");
-    auto *filterHelp = new QPushButton("Filter help");
-    auto *saveBuffer = new QPushButton("Save whole buffer…");
-    saveBuffer->setObjectName("saveBuffer");
-    auto *saveSelection = new QPushButton("Save selection…");
-    saveSelection->setObjectName("saveSelection"); saveSelection->setEnabled(false);
-    saveFiltered = new QPushButton("Save filtered rows…");
-    saveFiltered->setObjectName("saveFiltered"); saveFiltered->setEnabled(false);
-    auto *filterRow = new QHBoxLayout;
+    auto *filterHelp = new QToolButton;
+    filterHelp->setText("?");
+    filterHelp->setToolTip("Filter syntax");
+    filterRow->addWidget(new QLabel("Filter"));
     filterRow->addWidget(filterMode); filterRow->addWidget(terminalFilter, 1);
     filterRow->addWidget(filterCase); filterRow->addWidget(filterHighlight); filterRow->addWidget(filterHelp);
-    layout->addLayout(filterRow);
+    filterLayout->addLayout(filterRow);
     filterStatus = new QLabel;
     filterStatus->setObjectName("filterStatus"); filterStatus->setWordWrap(true);
-    layout->addWidget(filterStatus);
-    exportRow->addStretch();
-    exportRow->addWidget(saveBuffer); exportRow->addWidget(saveSelection); exportRow->addWidget(saveFiltered);
-    layout->addLayout(exportRow);
+    filterLayout->addWidget(filterStatus);
+    layout->addWidget(filterBar);
+
+    sendBar = new QWidget;
+    sendBar->setObjectName("sendBar");
+    auto *sendRow = new QHBoxLayout(sendBar);
+    sendRow->setContentsMargins(0, 0, 0, 0);
+    sendText = new QComboBox; sendText->setEditable(true); sendText->setObjectName("sendText");
+    sendText->setInsertPolicy(QComboBox::NoInsert);
+    sendText->lineEdit()->setMaxLength(32768);
+    sendText->lineEdit()->setPlaceholderText("Text to send (Enter sends)");
+    newline = new QComboBox; newline->addItems({"none", "lf", "cr", "crlf"});
+    newline->setToolTip("Line ending appended to each message");
+    echo = new QCheckBox("Local echo"); hexSend = new QCheckBox("Hex bytes");
+    hexSend->setToolTip("Pairs of hexadecimal digits, optional spaces. Newline is appended separately.");
+    sendButton = new QPushButton("Send"); sendButton->setObjectName("sendButton");
+    sendRow->addWidget(new QLabel("Send"));
+    sendRow->addWidget(sendText, 1); sendRow->addWidget(new QLabel("Line end"));
+    sendRow->addWidget(newline); sendRow->addWidget(echo);
+    sendRow->addWidget(hexSend); sendRow->addWidget(sendButton);
+    layout->addWidget(sendBar);
+    connectionEditors = {port, baud, forget, connectAction};
+
+    connect(loggingSettings, &QAction::triggered, this, [this] { advanced(1); });
+    connect(connectionSettings, &QAction::triggered, this, [this] { advanced(0); });
+    connect(terminalSettings, &QAction::triggered, this, [this] { advanced(2); });
+    connect(espSettings, &QAction::triggered, this, [this] { advanced(3); });
+    connect(openLogs, &QAction::triggered, this, [this] {
+        const auto directory = QDir(QFileInfo(config->ini.path).absolutePath())
+            .absoluteFilePath(runtimeProfile().logDirectory);
+        if (!QDir().mkpath(directory) || !QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
+            addEvent("Cannot open log folder: " + directory);
+    });
+    connect(copy, &QAction::triggered, view, &QTextEdit::copy);
+    connect(selectAll, &QAction::triggered, view, &QTextEdit::selectAll);
+    connect(find, &QAction::triggered, this, [this, showFilter] {
+        showFilter->setChecked(true);
+        terminalFilter->setFocus();
+        terminalFilter->selectAll();
+    });
+    connect(showFilter, &QAction::toggled, filterBar, &QWidget::setVisible);
+    connect(showSend, &QAction::toggled, sendBar, &QWidget::setVisible);
+    connect(showEvents, &QAction::toggled, events, &QWidget::setVisible);
     connect(terminalFilter, &QLineEdit::textChanged, this, [this] { updateFilter(); });
     connect(filterCase, &QCheckBox::toggled, this, [this] { updateFilter(); });
     connect(filterMode, &QComboBox::currentIndexChanged, this, [this] { updateFilter(); });
     connect(filterHighlight, &QCheckBox::toggled, this, [this] { updateFilter(); });
-    connect(filterHelp, &QPushButton::clicked, this, [this] {
-        QMessageBox help(this);
-        help.setWindowTitle("Line filters");
-        help.setTextFormat(Qt::PlainText);
-        help.setTextInteractionFlags(Qt::TextSelectableByMouse);
-        help.setText("Text mode: literal substring search.\n"
-            "Expression mode: quoted search terms, ! (NOT), && (AND), || (OR), parentheses.\n"
-            "Precedence: ! then && then ||.\n"
-            "Example: (\"error*flash\" || \"warn??\") && !\"ignored\"\n"
-            "? = one Unicode character; * = zero or more characters, on the same line.\n"
-            "Escapes inside quotes: \\? \\* \\\" \\\\ (literal ?, *, quote, backslash).\n\n"
-            "Numeric fields: temp >= 20 && temp < 30 matches temp=23.5 or temp: 23.5.\n"
-            "Position: number(2) >= -1.5e2 selects the second standalone number (1-based).\n"
-            "Comparisons: < <= == != >= >. Decimal point, optional sign/exponent.\n"
-            "Missing/invalid numbers never satisfy comparisons (including !=).\n"
-            "For a repeated field name, the first valid numeric assignment is used.\n"
-            "Numbers must be standalone; 32 in ESP32 and 23 in 23C are not numbers.\n"
-            "Combine text/numeric tests: \"sensor*\" && voltage >= 3.1.\n\n"
-            "Match case applies to text and field names. Empty filter matches all.\n"
-            "Save profile stores this filter. Invalid syntax disables filtered export.\n"
-            "Highlight keeps all rows visible; filtered export still saves only matches.\n"
-            "Filters/export use the retained terminal buffer, never change the raw log.\n"
-            "Saved filters follow INI rules: no leading/trailing whitespace or whitespace before ;/#.\n"
-            "Expressions: up to 4096 characters, 128 terms/operators, 32 nesting levels.");
-        help.exec();
+    connect(filterHelp, &QToolButton::clicked, this, [this] { showFilterHelp(this); });
+    connect(view, &QTextEdit::selectionChanged, this, [this, copy] {
+        const bool selected = view->textCursor().hasSelection();
+        saveSelection->setEnabled(selected);
+        copy->setEnabled(selected);
     });
-    connect(view, &QTextEdit::selectionChanged, this, [this, saveSelection] {
-        saveSelection->setEnabled(view->textCursor().hasSelection());
-    });
-    connect(saveBuffer, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Buffer); });
-    connect(saveSelection, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Selection); });
-    connect(saveFiltered, &QPushButton::clicked, this, [this] { exportTerminal(ExportMode::Filtered); });
-    auto *sendRow = new QHBoxLayout;
-    sendText = new QComboBox; sendText->setEditable(true); sendText->setObjectName("sendText");
-    sendText->setInsertPolicy(QComboBox::NoInsert);
-    sendText->lineEdit()->setMaxLength(32768);
-    newline = new QComboBox; newline->addItems({"none", "lf", "cr", "crlf"});
-    echo = new QCheckBox("Local echo"); hexSend = new QCheckBox("Hex bytes");
-    hexSend->setToolTip("Pairs of hexadecimal digits, optional spaces. Newline is appended separately.");
-    sendButton = new QPushButton("Send"); sendButton->setObjectName("sendButton");
-    sendRow->addWidget(sendText, 1); sendRow->addWidget(newline); sendRow->addWidget(echo);
-    sendRow->addWidget(hexSend); sendRow->addWidget(sendButton);
-    layout->addLayout(sendRow);
-    events = new QPlainTextEdit; events->setReadOnly(true);
-    events->setMaximumHeight(110); events->setMaximumBlockCount(200);
-    events->setObjectName("events");
-    layout->addWidget(events);
-    auto *configLabel = new QLabel("INI: " + config->ini.path);
-    configLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(configLabel);
-    auto *versionLabel = new QLabel("Serial ESP Helper — Version " + QCoreApplication::applicationVersion());
-    versionLabel->setObjectName("applicationVersion");
-    versionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(versionLabel);
-    setCentralWidget(central);
-    refreshProfiles(); loadProfile(p);
+    connect(saveBuffer, &QAction::triggered, this, [this] { exportTerminal(ExportMode::Buffer); });
+    connect(saveSelection, &QAction::triggered, this, [this] { exportTerminal(ExportMode::Selection); });
+    connect(saveFiltered, &QAction::triggered, this, [this] { exportTerminal(ExportMode::Filtered); });
+    loadProfile(p);
     worker->moveToThread(&thread);
     connect(&thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(worker, &SessionWorker::stateChanged, this, &SessionWindow::applyState);
+    connect(worker, &SessionWorker::toolCancelRequested, this, [this] {
+        if (diagnosticsDialog) diagnosticsDialog->cancelCurrent();
+    });
     connect(worker, &SessionWorker::problem, this, &SessionWindow::addEvent);
     connect(worker, &SessionWorker::logFileChanged, this, [this](const QString &path) {
         logPath = path; updateLogStatus();
     });
+    connect(worker, &SessionWorker::logSplit, this, [this](const QString &previous) {
+        logFault.clear();
+        addEvent("Log split: closed " + QFileInfo(previous).fileName()
+                 + " and started a new log set; the port stayed open.");
+    });
     connect(worker, &SessionWorker::portsAvailable, this, [this](const QStringList &ports) {
         availablePorts = ports; refreshPorts();
     });
+    connect(worker, &SessionWorker::selectedPortChanged, this, [this](const QString &selected) {
+        settings.port = selected;
+        port->setCurrentText(selected);
+        updateTitle();
+    });
     connect(worker, &SessionWorker::identityBound, this, [this](const Profile &bound) {
         settings.usbSerial = bound.usbSerial; settings.vid = bound.vid; settings.pid = bound.pid;
-        identity->setText(QString("Bound USB: %1 VID=%2 PID=%3 (Save profile to persist)")
+        identity->setText(QString("Bound USB: %1 VID=%2 PID=%3 (File > Save profile to persist)")
             .arg(settings.usbSerial).arg(settings.vid).arg(settings.pid));
     });
     connect(worker, &SessionWorker::sent, this, [this](const QByteArray &bytes) {
@@ -248,59 +449,39 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
             view->verticalScrollBar()->setValue(follow->isChecked() ? view->verticalScrollBar()->maximum() : scroll);
         }
     });
-    connect(config, &AppConfig::profilesChanged, this, [this, configLabel] {
-        refreshProfiles(); configLabel->setText("INI: " + config->ini.path);
-    });
-    connect(profiles, &QComboBox::activated, this, [this](int index) {
-        if (index >= 0 && index < config->ini.profiles.size()) {
-            QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
-            loadProfile(config->ini.profiles[index]);
-        }
-    });
-    connect(newProfile, &QPushButton::clicked, this, [this] {
-        bool ok = false;
-        const auto name = QInputDialog::getText(this, "New profile", "Unique name",
-            QLineEdit::Normal, "", &ok);
-        if (!ok) return;
-        for (const auto &p : config->ini.profiles) if (p.name == name) {
-            QMessageBox::warning(this, "Profile exists", "Select the existing profile instead."); return;
-        }
-        Profile p; p.name = name; QString error; Profile checked;
-        if (!Profile::fromValues(name, p.values(), checked, error)) {
-            QMessageBox::warning(this, "Invalid name", error); return;
-        }
-        QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
-        loadProfile(p);
-    });
-    connect(save, &QPushButton::clicked, this, [this] {
+    connect(config, &AppConfig::globalsChanged, this, [this] { updateLogStatus(); });
+    connect(saveProfile, &QAction::triggered, this, [this] {
         if (collect() && config->saveProfile(settings, this)) addEvent("Profile saved atomically; previous INI in .bak");
     });
-    connect(newWindow, &QPushButton::clicked, this, [this] {
-        if (collect()) (new SessionWindow(config, settings))->show();
-    });
-    connect(chooseConfig, &QPushButton::clicked, this, [this] { config->chooseFile(this); });
-    connect(advancedButton, &QPushButton::clicked, this, [this] { advanced(); });
-    connect(autoReconnect, &QCheckBox::toggled, this, [this](bool enabled) {
+    connect(autoReconnect, &QAction::toggled, this, [this](bool enabled) {
         settings.autoReconnect = enabled;
         QMetaObject::invokeMethod(worker, [worker = worker, enabled] { worker->setAutoReconnect(enabled); },
                                   Qt::QueuedConnection);
         addEvent(enabled ? "Automatic reconnect enabled. Save profile to persist."
                          : "Automatic reconnect disabled. Save profile to persist.");
     });
-    connect(connectButton, &QPushButton::clicked, this, &SessionWindow::connectSession);
-    connect(pauseButton, &QPushButton::clicked, this, [this] {
+    connect(connectAction, &QAction::triggered, this, &SessionWindow::connectSession);
+    connect(diagnostics, &QAction::triggered, this, &SessionWindow::showEsptool);
+    connect(flash, &QAction::triggered, this, [this] {
+        showEsptool();
+        if (diagnosticsDialog) diagnosticsDialog->openFlashPlan();
+    });
+    connect(pause, &QAction::triggered, this, [this] {
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
     });
-    connect(forget, &QPushButton::clicked, this, [this] {
+    connect(splitAction, &QAction::triggered, this, [this] {
+        QMetaObject::invokeMethod(worker, &SessionWorker::splitLog, Qt::QueuedConnection);
+    });
+    connect(forget, &QAction::triggered, this, [this] {
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
         settings.usbSerial.clear(); settings.vid = settings.pid = -1;
         identity->setText("No stable USB binding; only the explicit selected port is used.");
         addEvent("USB binding forgotten; session paused. Connect and Save to bind the new device.");
     });
-    connect(clear, &QPushButton::clicked, this, [this] { terminal->clear(); renderView(); });
+    connect(clear, &QAction::triggered, this, [this] { terminal->clear(); renderView(); });
     connect(sendButton, &QPushButton::clicked, this, &SessionWindow::sendMessage);
     connect(sendText->lineEdit(), &QLineEdit::returnPressed, this, &SessionWindow::sendMessage);
-    connect(readOnly, &QCheckBox::toggled, this, [this](bool checked) {
+    connect(readOnly, &QAction::toggled, this, [this](bool checked) {
         settings.readOnly = checked;
         sendButton->setEnabled(state == SessionState::Connected && !checked);
         QMetaObject::invokeMethod(worker, [worker = worker, checked] { worker->setReadOnly(checked); },
@@ -311,40 +492,45 @@ SessionWindow::SessionWindow(AppConfig *c, const Profile &p, SerialTransport *tr
     connect(renderTimer, &QTimer::timeout, this, &SessionWindow::render); renderTimer->start();
     connect(&thread, &QThread::started, worker, &SessionWorker::monitor);
     thread.start();
-    addEvent("Stage 1: event-driven serial. Manual pause releases the port and suppresses reconnect.");
+    addEvent("Event-driven serial. Pause releases the port and suppresses reconnect.");
     addEvent("DTR/RTS are explicit connection settings, independent of read-only send gating.");
     addEvent("OS/adapter opening or closing may pulse physical lines. Read-only toggles never reopen the port.");
     if (p.autoConnect) QTimer::singleShot(0, this, &SessionWindow::connectSession);
 }
 void SessionWindow::applyState(SessionState s) {
     state = s; status->setText(stateName(s));
+    status->setStyleSheet(stateStyle(s));
     updateLogStatus();
-    const bool active = s == SessionState::Waiting || s == SessionState::Connecting
-        || s == SessionState::Connected || s == SessionState::Loaned;
-    for (QWidget *editor : connectionEditors) {
-        editor->setEnabled(!active);
-        editor->setToolTip(active ? "Manual pause before editing connection settings" : "");
+    const bool active = diagnosticsDialog || s == SessionState::Waiting
+        || s == SessionState::Connecting || s == SessionState::Connected
+        || s == SessionState::Loaned;
+    for (QObject *editor : connectionEditors) {
+        editor->setProperty("enabled", !active);
+        editor->setProperty("toolTip", !active ? "" : diagnosticsDialog
+            ? "Close the esptool diagnostics window before changing ports."
+            : "Pause before editing connection settings");
     }
+    splitAction->setEnabled(s == SessionState::Connected);
     sendButton->setEnabled(s == SessionState::Connected && !settings.readOnly);
     if (s != SessionState::Connected && s != SessionState::Connecting) {
         render(); terminal->finish(); renderView();
     }
+    updateTitle();
+}
+void SessionWindow::updateTitle() {
+    const QString target = settings.port.isEmpty() ? QString("no port") : settings.port;
+    setWindowTitle(QString("%1 (%2) — %3").arg(settings.name, target, stateName(state)));
+    emit summaryChanged();
 }
 SessionWindow::~SessionWindow() {
+    shuttingDown = true;
     renderTimer->stop();
+    if (diagnosticsDialog) diagnosticsDialog->cancelAndWait();
     QMetaObject::invokeMethod(worker, &SessionWorker::shutdown, Qt::BlockingQueuedConnection);
     thread.quit(); thread.wait();
 }
-void SessionWindow::refreshProfiles() {
-    profiles->blockSignals(true); profiles->clear();
-    for (const Profile &p : config->ini.profiles) profiles->addItem(p.name);
-    if (profiles->findText(settings.name) < 0) profiles->addItem(settings.name);
-    profiles->setCurrentText(settings.name); profiles->blockSignals(false);
-}
 void SessionWindow::loadProfile(const Profile &p) {
     settings = p;
-    if (profiles->findText(p.name) < 0) profiles->addItem(p.name);
-    profiles->setCurrentText(p.name);
     port->setCurrentText(p.port); baud->setCurrentText(QString::number(p.baud));
     readOnly->blockSignals(true); readOnly->setChecked(p.readOnly); readOnly->blockSignals(false);
     autoReconnect->blockSignals(true); autoReconnect->setChecked(p.autoReconnect); autoReconnect->blockSignals(false);
@@ -363,7 +549,15 @@ void SessionWindow::loadProfile(const Profile &p) {
     identity->setText(p.usbSerial.isEmpty() ? "No stable USB binding; only the explicit selected port is used."
         : QString("Bound USB: %1 VID=%2 PID=%3 (port field cannot override this binding)")
             .arg(p.usbSerial).arg(p.vid).arg(p.pid));
-    setWindowTitle("Serial ESP Helper " + QCoreApplication::applicationVersion() + " — " + p.name);
+    updateTitle();
+}
+Profile SessionWindow::runtimeProfile() const {
+    Profile resolved = settings;
+    if (resolved.logDirectory.isEmpty()) resolved.logDirectory = config->ini.defaultLogDirectory;
+    if (resolved.esptoolPath.isEmpty()) resolved.esptoolPath = config->ini.esptoolPath;
+    if (resolved.esptoolChip.isEmpty()) resolved.esptoolChip = config->ini.esptoolDefaultChip;
+    if (resolved.esptoolBaud == 0) resolved.esptoolBaud = config->ini.esptoolBaud;
+    return resolved;
 }
 bool SessionWindow::collect() {
     auto values = settings.values();
@@ -391,14 +585,21 @@ void SessionWindow::refreshPorts() {
 }
 void SessionWindow::advanced(int tab) {
     if (!collect()) return;
-    QDialog dialog(this); dialog.setWindowTitle("Profile settings");
-    dialog.resize(780, 600);
+    QDialog dialog(this); dialog.setWindowTitle("Profile settings — " + settings.name);
+    dialog.setObjectName("profileSettings");
+    dialog.resize(760, 580);
     auto *layout = new QVBoxLayout(&dialog);
-    auto *notice = new QLabel("OK applies settings and pauses this session. Connect / Resume to restart; Save profile to persist.");
+    auto *notice = new QLabel(QString(
+        "These settings belong to profile '%1'. Empty override fields use the shared defaults "
+        "from Settings > Global settings.\n"
+        "Save profile writes all tabs to the INI file. Apply uses them in this session only. "
+        "Both pause the session; use Connect / Resume afterwards.")
+        .arg(settings.name));
+    notice->setObjectName("settingsScope");
     notice->setWordWrap(true); layout->addWidget(notice);
     auto *tabs = new QTabWidget;
     QList<QFormLayout *> forms;
-    for (const auto &name : {"Connection", "Logging", "Terminal"}) {
+    for (const auto &name : {"Connection", "Logging", "Terminal", "ESP tools"}) {
         auto *page = new QWidget;
         forms << new QFormLayout(page);
         forms.last()->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -412,30 +613,45 @@ void SessionWindow::advanced(int tab) {
     auto values = settings.values();
     const QMap<QString, QStringList> options = {
         {"dataBits", {"5", "6", "7", "8"}}, {"parity", {"none", "even", "odd", "space", "mark"}},
-        {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}}};
-    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect", "textLog",
-                               "autoReconnect", "newLogOnReconnect"};
+        {"stopBits", {"1", "1.5", "2"}}, {"flowControl", {"none", "hardware", "software"}},
+        {"logMode", {"text", "raw", "both"}}};
+    const QStringList flags = {"dtr", "rts", "logging", "timestampMetadata", "autoConnect",
+                               "autoReconnect", "newLogOnReconnect", "terminalTimestamp",
+                               "textTimestamp", "timestampMilliseconds"};
+    const QMap<QString, int> groups = {
+        {"esptoolPath", 3}, {"esptoolChip", 3}, {"esptoolBaud", 3},
+        {"terminalRows", 2}, {"lineColumns", 2}, {"displayQueueBytes", 2}, {"terminalTimestamp", 2},
+        {"newLogOnReconnect", 1}, {"timestampMetadata", 1}, {"rawLogExtension", 1},
+        {"textTimestamp", 1}, {"timestampMilliseconds", 1}};
     const QList<QPair<QString, QString>> fields = {
         {"dataBits", "Data bits"}, {"parity", "Parity"}, {"stopBits", "Stop bits"},
-        {"autoConnect", "Connect on window open and retry failed initial opens (explicit opt-in)"},
-        {"autoReconnect", "Reconnect this session after connection loss"},
-        {"flowControl", "Flow control"},         {"dtr", "DTR (applied on open, independent of read-only)"},
+        {"flowControl", "Flow control"}, {"dtr", "DTR (applied on open, independent of read-only)"},
         {"rts", "RTS (applied on open unless hardware flow manages it)"},
+        {"autoConnect", "Connect when the session opens and retry failed initial opens"},
+        {"autoReconnect", "Reconnect this session after connection loss"},
         {"writeTimeoutMs", "Write completion timeout (100–60000 ms)"},
         {"retryLimit", "Open retries per outage (1–100, at 1 Hz)"},
-        {"terminalRows", "Maximum terminal rows (10–10000)"},
-        {"lineColumns", "Wrap at columns (32–16384; total cells capped at 1 Mi)"},
-        {"displayQueueBytes", "Display receive queue (1024–67108864 bytes; separate from disk log)"},
-        {"logging", "Exact raw receive logging (session metadata is always recorded)"},
-        {"logDirectory", "Log directory (relative to INI)"},
+        {"logging", "Receive logging enabled (session metadata is always recorded)"},
+        {"logMode", "Log format: Text, Raw (exact bytes), or Both"},
+        {"logDirectory", "Log folder override"},
         {"logName", "Filename template (without extension)"},
-        {"logBytes", "Raw segment size (1–1073741824 bytes)"},
+        {"logExtension", "Text log extension (default .log)"},
+        {"rawLogExtension", "Raw exact byte-log extension (default .raw)"},
+        {"logBytes", "Rotate after received bytes (1–1073741824; text expansion is additional)"},
         {"logSeconds", "Rotate after seconds (0 = size only; max 31536000)"},
         {"logRetention", "Rolling buffer: completed segments kept (1–100), plus active"},
         {"newLogOnReconnect", "New log set on reconnect (off = append to current log)"},
         {"logQueueBytes", "Disk queue byte limit (1–67108864)"},
         {"timestampMetadata", "Separate reception UTC raw-offset metadata (not device time)"},
-        {"textLog", "Optional readable timestamped UTF-8 .text (with raw logging)"}};
+        {"textTimestamp", "Add host reception UTC timestamps to text log"},
+        {"timestampMilliseconds", "Timestamp precision: 3 decimal places in seconds (terminal + text log)"},
+        {"terminalRows", "Maximum terminal rows (10–10000)"},
+        {"lineColumns", "Wrap at columns (32–16384; total cells capped at 1 Mi)"},
+        {"displayQueueBytes", "Display receive queue (1024–67108864 bytes; separate from disk log)"},
+        {"terminalTimestamp", "Show host reception UTC timestamps in terminal"},
+        {"esptoolPath", "esptool executable override"},
+        {"esptoolChip", "Expected chip override"},
+        {"esptoolBaud", "esptool baud override (0 = global)"}};
     for (const auto &field : fields) {
         QWidget *editor;
         if (options.contains(field.first)) {
@@ -445,35 +661,57 @@ void SessionWindow::advanced(int tab) {
             auto *box = new QCheckBox; box->setChecked(values[field.first] == "true"); editor = box;
         } else editor = new QLineEdit(values[field.first]);
         editor->setObjectName(field.first);
-        int group = 0;
-        if (field.first.startsWith("log") || field.first == "newLogOnReconnect"
-            || field.first == "timestampMetadata" || field.first == "textLog") group = 1;
-        if (field.first == "terminalRows" || field.first == "lineColumns"
-            || field.first == "displayQueueBytes") group = 2;
+        int group = groups.value(field.first, field.first.startsWith("log") ? 1 : 0);
         editors[field.first] = editor; forms[group]->addRow(field.second, editor);
     }
+    qobject_cast<QLineEdit *>(editors["logDirectory"])->setPlaceholderText(
+        "Empty = global default: " + config->ini.defaultLogDirectory);
+    qobject_cast<QLineEdit *>(editors["esptoolPath"])->setPlaceholderText(
+        "Empty = global: " + (config->ini.esptoolPath.isEmpty() ? QString("esptool on PATH") : config->ini.esptoolPath));
+    qobject_cast<QLineEdit *>(editors["esptoolChip"])->setPlaceholderText(
+        "Empty = global: " + (config->ini.esptoolDefaultChip.isEmpty() ? QString("any chip") : config->ini.esptoolDefaultChip));
     auto *namingHelp = new QLabel("Fields: {date}, {time} (UTC), {profile}, {port}, {serial}, {id}.\n"
-        "Example: {profile}-{date}-{time}. A unique ID is always included to avoid overwriting.\n"
-        "Rotation uses .raw.1, .raw.2, etc.; oldest segments of this log set are deleted.\n"
+        "Example: {profile}-{date}-{time}. ID is included only when {id} is in the template.\n"
+        "Existing/in-use names get a numeric suffix for a new session; existing logs are not overwritten.\n"
+        "Rotation uses the chosen extension plus .1, .2, etc.; oldest segments of this log set are deleted.\n"
         "Size/time limits: whichever comes first. Time rotation happens on the next received bytes.\n"
+        "Session > Split log closes the current log set and starts a new one without disconnecting.\n"
         "Other log sets are never deleted automatically. Traffic logging captures received bytes only.");
     namingHelp->setWordWrap(true); forms[1]->addRow(namingHelp);
     auto *browse = new QPushButton("Choose log folder…");
-    forms[1]->addRow(browse);
+    forms[1]->insertRow(forms[1]->rowCount() - 1, "", browse);
     connect(browse, &QPushButton::clicked, &dialog, [&] {
         auto *directory = qobject_cast<QLineEdit *>(editors["logDirectory"]);
         const QString selected = QFileDialog::getExistingDirectory(&dialog, "Log folder",
-            QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(directory->text()));
+            QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(
+                directory->text().isEmpty() ? config->ini.defaultLogDirectory : directory->text()));
         if (!selected.isEmpty()) directory->setText(selected);
     });
+    auto *espNote = new QLabel("Leave these empty to use the shared esptool settings. A profile override "
+                               "is useful when one device needs another chip check or baud rate.");
+    espNote->setWordWrap(true); forms[3]->insertRow(0, espNote);
     auto *flow = qobject_cast<QComboBox *>(editors["flowControl"]);
     auto *rts = qobject_cast<QCheckBox *>(editors["rts"]);
     auto updateRts = [flow, rts] { rts->setEnabled(flow->currentText() != "hardware"); };
     connect(flow, &QComboBox::currentTextChanged, &dialog, updateRts); updateRts();
+    auto *logMode = qobject_cast<QComboBox *>(editors["logMode"]);
+    auto updateLogMode = [&] {
+        const bool text = logMode->currentText() != "raw";
+        const bool raw = logMode->currentText() != "text";
+        editors["logExtension"]->setEnabled(text);
+        editors["textTimestamp"]->setEnabled(text);
+        editors["rawLogExtension"]->setEnabled(raw);
+        editors["timestampMetadata"]->setEnabled(raw);
+    };
+    connect(logMode, &QComboBox::currentTextChanged, &dialog, updateLogMode); updateLogMode();
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Apply to session (not saved)");
+    auto *save = buttons->addButton("Save profile", QDialogButtonBox::ActionRole);
+    save->setObjectName("saveSettings");
+    save->setDefault(true);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+    auto apply = [&](bool persist) {
         for (auto it = editors.cbegin(); it != editors.cend(); ++it) {
             if (auto *combo = qobject_cast<QComboBox *>(it.value())) values[it.key()] = combo->currentText();
             else if (auto *box = qobject_cast<QCheckBox *>(it.value())) values[it.key()] = box->isChecked() ? "true" : "false";
@@ -483,14 +721,19 @@ void SessionWindow::advanced(int tab) {
         if (!Profile::fromValues(settings.name, values, checked, error)) {
             QMessageBox::warning(&dialog, "Invalid settings", error); return;
         }
+        if (persist && !config->saveProfile(checked, &dialog)) return;
         QMetaObject::invokeMethod(worker, &SessionWorker::pause, Qt::QueuedConnection);
         render(); terminal->finish();
         settings = checked; terminal->setLimits(settings.terminalRows, settings.lineColumns);
         autoReconnect->blockSignals(true); autoReconnect->setChecked(settings.autoReconnect); autoReconnect->blockSignals(false);
         logPath.clear(); logFault.clear(); updateLogStatus();
-        renderView(); addEvent("Settings updated; paused. Connect to apply, Save profile to persist.");
+        renderView(); addEvent(persist
+            ? "Profile saved to INI; all settings tabs persisted. Session paused; Connect / Resume."
+            : "Settings applied to this session only (NOT saved). Session paused; Connect / Resume.");
         dialog.accept();
-    });
+    };
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] { apply(false); });
+    connect(save, &QPushButton::clicked, &dialog, [&] { apply(true); });
     dialog.exec();
 }
 void SessionWindow::connectSession() {
@@ -501,12 +744,53 @@ void SessionWindow::connectSession() {
     // Lock immediately, before the queued worker request can race another UI edit.
     applyState(SessionState::Waiting);
     terminal->finish();
-    const Profile p = settings;
+    const Profile p = runtimeProfile();
     logPath.clear(); logFault.clear(); updateLogStatus();
     const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(p.logDirectory);
     QMetaObject::invokeMethod(worker, [worker = worker, p, directory] {
         worker->configure(p, directory); worker->resume();
     }, Qt::QueuedConnection);
+}
+void SessionWindow::showEsptool() {
+    if (diagnosticsDialog) {
+        diagnosticsDialog->raise();
+        diagnosticsDialog->activateWindow();
+        return;
+    }
+    if (!collect()) return;
+    auto acquire = [this](QString &error) {
+        bool prepared = false;
+        QMetaObject::invokeMethod(worker, [&] { prepared = worker->prepareTool(error); },
+                                  Qt::BlockingQueuedConnection);
+        return prepared;
+    };
+    auto release = [this] {
+        QMetaObject::invokeMethod(worker, &SessionWorker::finishTool,
+                                  Qt::BlockingQueuedConnection);
+    };
+    auto *dialog = new EsptoolDialog(runtimeProfile(), acquire, release,
+                                     config->ini.confirmReset, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    diagnosticsDialog = dialog;
+    connect(dialog, &EsptoolDialog::pathChanged, this, [this](const QString &path) {
+        config->ini.esptoolPath = path;
+        settings.esptoolPath.clear();
+    });
+    connect(dialog, &EsptoolDialog::saveSettingsRequested, this, [this, dialog] {
+        if (collect() && config->saveProfile(settings, dialog)) {
+            dialog->settingsSaved(config->ini.path);
+            addEvent("Global esptool path and profile settings saved to INI.");
+        }
+    });
+    connect(dialog, &QObject::destroyed, this, [this] {
+        diagnosticsDialog = nullptr;
+        if (!shuttingDown) applyState(state);
+    });
+    for (QObject *editor : connectionEditors) {
+        editor->setProperty("enabled", false);
+        editor->setProperty("toolTip", "Close the esptool diagnostics window before changing ports.");
+    }
+    dialog->show();
 }
 void SessionWindow::sendMessage() {
     if (readOnly->isChecked() || settings.readOnly || state != SessionState::Connected) {
@@ -531,10 +815,10 @@ void SessionWindow::sendMessage() {
 }
 void SessionWindow::render() {
     quint64 dropped = 0;
-    const auto bytes = display->take(dropped);
-    if (bytes.isEmpty() && !dropped) return;
+    const auto records = display->takeRecords(dropped);
+    if (records.isEmpty() && !dropped) return;
     const int scroll = view->verticalScrollBar()->value();
-    terminal->feed(bytes);
+    for (const auto &record : records) terminal->feed(record.bytes, record.received);
     if (dropped) {
         terminal->finish();
         terminal->feed(QString("\n[render queue dropped %1 bytes; raw logging is independent]\n").arg(dropped).toUtf8());
@@ -547,21 +831,25 @@ void SessionWindow::renderView() {
     const auto cursor = view->textCursor();
     const int scroll = view->verticalScrollBar()->value();
     view->setExtraSelections({});
-    if (terminalFilter->text().isEmpty() || !filterValid) view->setHtml(terminal->html());
+    if (terminalFilter->text().isEmpty() || !filterValid)
+        view->setHtml(terminal->html(settings.terminalTimestamp, settings.timestampMilliseconds));
     else {
         const auto text = terminal->plainText();
         QStringList selected;
         QVector<bool> matched;
+        int row = 0;
         for (const auto &line : text.split('\n')) {
             const bool match = matchesFilter(line);
             matched << match;
-            if (match) selected << line;
+            if (match) selected << (settings.terminalTimestamp
+                ? terminal->timestampPrefix(row, settings.timestampMilliseconds) + line : line);
+            ++row;
         }
         filterStatus->setText(QString("%1 / %2 buffered rows match. Save profile to keep this filter.")
                               .arg(selected.size()).arg(terminal->rowCount()));
         if (!filterHighlight->isChecked()) view->setPlainText(selected.join('\n'));
         else {
-            view->setHtml(terminal->html());
+            view->setHtml(terminal->html(settings.terminalTimestamp, settings.timestampMilliseconds));
             QList<QTextEdit::ExtraSelection> highlights;
             for (auto block = view->document()->begin(); block.isValid(); block = block.next()) {
                 if (!matched.value(block.blockNumber())) continue;
@@ -595,6 +883,7 @@ void SessionWindow::updateFilter() {
     filterStatus->setStyleSheet(filterValid ? "" : "QLabel { color:#d03030; font-weight:bold; }");
     filterStatus->setText(filterValid ? "No filter. Raw logs are unchanged."
                                      : error + " — filter not applied; showing all rows.");
+    filterStatus->setVisible(!filterValid || !terminalFilter->text().isEmpty());
     renderView();
 }
 bool SessionWindow::matchesFilter(const QString &line) const {
@@ -640,15 +929,22 @@ void SessionWindow::addEvent(const QString &message) {
 void SessionWindow::updateLogStatus() {
     logStatus->setStyleSheet(logFault.isEmpty() ? "" : "QLabel { color:#d03030; font-weight:bold; }");
     if (!logFault.isEmpty()) { logStatus->setText(logFault); return; }
-    const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(settings.logDirectory);
+    const auto resolved = runtimeProfile();
+    const QString directory = QDir(QFileInfo(config->ini.path).absolutePath()).absoluteFilePath(resolved.logDirectory);
+    logStatus->setToolTip(QString("Template: %1 | segment: %2 bytes / %3 s (0 = off) | keep %4 completed + active")
+        .arg(settings.logName).arg(settings.logBytes).arg(settings.logSeconds).arg(settings.logRetention));
     if (!settings.logging) {
-        logStatus->setText("Traffic logging OFF. Enable it in Logging settings. Session metadata only.\nFolder: " + directory);
-    } else {
-        const bool recording = state == SessionState::Connected && !logPath.isEmpty();
-        logStatus->setText(QString("Traffic logging %1 (received bytes). %2\n%3")
-            .arg(recording ? "ON" : "enabled, not currently recording",
-                 logPath.isEmpty() ? "Folder: " + directory : "File: " + logPath,
-                 QString("Template: %1 | segment: %2 bytes / %3 s (0 = off) | keep %4 completed + active")
-                    .arg(settings.logName).arg(settings.logBytes).arg(settings.logSeconds).arg(settings.logRetention)));
+        logStatus->setText("Traffic logging OFF (enable under Settings > Logging). Folder: " + directory);
+        return;
     }
+    const bool recording = state == SessionState::Connected && !logPath.isEmpty();
+    QString files = "Folder: " + directory;
+    if (!logPath.isEmpty()) {
+        files = "File: " + logPath;
+        if (settings.logMode == "both")
+            files += " + " + QFileInfo(logPath.chopped(settings.rawLogExtension.size()) + settings.logExtension).fileName();
+    }
+    logStatus->setText(QString("Traffic logging %1 (%2). %3")
+        .arg(recording ? "ON" : "enabled, not recording",
+             settings.logMode == "text" ? "Text" : settings.logMode == "raw" ? "Raw bytes" : "Text + Raw", files));
 }

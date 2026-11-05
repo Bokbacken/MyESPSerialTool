@@ -64,27 +64,38 @@ QString stateName(SessionState state) {
     case SessionState::Connecting: return "Connecting";
     case SessionState::Connected: return "Connected";
     case SessionState::ManuallyPaused: return "Manually paused";
-    case SessionState::Loaned: return "Loaned (reserved)";
+    case SessionState::Loaned: return "Port lent to esptool";
     }
     return {};
 }
-void DisplayBuffer::append(const QByteArray &bytes) {
+void DisplayBuffer::append(const QByteArray &bytes, const QDateTime &received) {
     QMutexLocker lock(&mutex);
-    const qsizetype room = limit - buffer.size();
-    buffer += bytes.left(room);
-    dropped += bytes.size() - qMin(bytes.size(), room);
+    const qsizetype accepted = records.size() < 4096 ? qMin(bytes.size(), limit - bufferedBytes) : 0;
+    if (accepted > 0) records << Record{bytes.left(accepted), received};
+    bufferedBytes += accepted;
+    dropped += bytes.size() - accepted;
 }
 void DisplayBuffer::setLimit(qsizetype bytes) {
     QMutexLocker lock(&mutex);
     limit = bytes;
-    if (buffer.size() > limit) {
-        dropped += buffer.size() - limit;
-        buffer.truncate(limit);
+    while (bufferedBytes > limit && !records.isEmpty()) {
+        auto &last = records.last();
+        const qsizetype removed = qMin(last.bytes.size(), bufferedBytes - limit);
+        last.bytes.chop(removed);
+        bufferedBytes -= removed;
+        dropped += removed;
+        if (last.bytes.isEmpty()) records.removeLast();
     }
 }
 QByteArray DisplayBuffer::take(quint64 &droppedBytes) {
+    QByteArray result;
+    for (const auto &record : takeRecords(droppedBytes)) result += record.bytes;
+    return result;
+}
+QVector<DisplayBuffer::Record> DisplayBuffer::takeRecords(quint64 &droppedBytes) {
     QMutexLocker lock(&mutex);
-    QByteArray result; result.swap(buffer);
+    QVector<Record> result; result.swap(records);
+    bufferedBytes = 0;
     droppedBytes = dropped; dropped = 0; return result;
 }
 SessionWorker::SessionWorker(std::shared_ptr<DisplayBuffer> d, SerialTransport *t, QObject *parent)
@@ -113,7 +124,7 @@ void SessionWorker::initialize() {
         if (bytes.isEmpty()) return;
         const auto received = QDateTime::currentDateTimeUtc();
         if (logger && settings.logging) logger->enqueue(bytes, received);
-        if (display) display->append(bytes);
+        if (display) display->append(bytes, received);
     });
 }
 void SessionWorker::transition(SessionState state) {
@@ -132,12 +143,49 @@ void SessionWorker::configure(const Profile &p, const QString &directory) {
     stopping = false; settings = checked; logDirectory = directory; attempts = 0;
     if (display) display->setLimit(settings.displayQueueBytes);
     reconnectAfterLoss = false;
+    toolRestorePending = false;
     lastProblem.clear(); transition(SessionState::Disconnected);
 }
 void SessionWorker::monitor() {
     initialize();
     pollTimer->start();
     poll();
+}
+bool SessionWorker::prepareTool(QString &error) {
+    initialize();
+    if (current == SessionState::Loaned) {
+        error = "The serial port is already lent to another esptool operation.";
+        return false;
+    }
+    restoreAfterTool = current == SessionState::Connected
+        || current == SessionState::Waiting || current == SessionState::Connecting;
+    manualPauseDuringTool = current == SessionState::ManuallyPaused;
+    attempts = 0;
+    if (pollTimer) pollTimer->stop();
+    if (writeTimer) writeTimer->stop();
+    stopping = true;
+    transport->close();
+    stopping = false;
+    stopLog("serial port handed to esptool");
+    transition(SessionState::Loaned);
+    return true;
+}
+void SessionWorker::finishTool() {
+    if (current != SessionState::Loaned) return;
+    const bool reconnect = restoreAfterTool && !manualPauseDuringTool;
+    restoreAfterTool = false;
+    if (reconnect) {
+        reconnectAfterLoss = true;
+        toolRestorePending = true;
+        transition(SessionState::Waiting);
+        if (pollTimer) pollTimer->start();
+        poll();
+    } else {
+        toolRestorePending = false;
+        transition(manualPauseDuringTool ? SessionState::ManuallyPaused
+                                         : SessionState::Disconnected);
+    }
+    manualPauseDuringTool = false;
 }
 void SessionWorker::resume() {
     initialize();
@@ -148,9 +196,18 @@ void SessionWorker::resume() {
     if (!pollTimer->isActive()) pollTimer->start();
 }
 void SessionWorker::pause() {
-    initialize(); writeTimer->stop();
+    initialize();
+    if (current == SessionState::Loaned) {
+        restoreAfterTool = false;
+        manualPauseDuringTool = true;
+        toolRestorePending = false;
+        emit toolCancelRequested();
+        return;
+    }
+    writeTimer->stop();
     stopping = true; transport->close(); stopping = false;
     reconnectAfterLoss = false;
+    toolRestorePending = false;
     stopLog("manually paused");
     transition(SessionState::ManuallyPaused);
 }
@@ -163,7 +220,7 @@ void SessionWorker::setAutoReconnect(bool enabled) {
     settings.autoReconnect = enabled;
     if (logger) logger->enqueueEvent(enabled ? "automatic reconnect enabled" : "automatic reconnect disabled",
                                      QDateTime::currentDateTimeUtc());
-    if (!enabled && reconnectAfterLoss && current == SessionState::Waiting) {
+    if (!enabled && reconnectAfterLoss && !toolRestorePending && current == SessionState::Waiting) {
         stopLog("automatic reconnect disabled while waiting");
         transition(SessionState::Disconnected);
     }
@@ -172,18 +229,48 @@ void SessionWorker::stopLog(const QString &reason) {
     if (!logger) return;
     logger->shutdown(reason, QDateTime::currentDateTimeUtc()); delete logger; logger = nullptr;
 }
+void SessionWorker::splitLog() {
+    initialize();
+    if (current != SessionState::Connected || !logger) {
+        report("Split log ignored: the session is not connected and recording.");
+        return;
+    }
+    const QString previous = logBase;
+    const auto now = QDateTime::currentDateTimeUtc();
+    logger->enqueueEvent("log split requested by user; continuing in a new log set", now);
+    stopLog("split by user");
+    startLog();
+    logger->enqueueEvent("continued after user split from " + QFileInfo(previous).fileName(), now);
+    logger->enqueueEvent("connected " + settings.port + " (connection kept open across split)", now);
+    // Same worker thread as the receive path, so the marker sits exactly between the two log sets.
+    if (display) display->append("\n----- log split " + now.toString(Qt::ISODateWithMs).toUtf8()
+        + " UTC: new log set " + QFileInfo(logBase).fileName().toUtf8() + " -----\n", now);
+    emit logSplit(previous);
+}
 void SessionWorker::startLog() {
     if (logger) return;
-    const QString base = QDir(logDirectory).filePath(logFileStem(settings,
+    const QString requested = QDir(logDirectory).filePath(logFileStem(settings,
         QDateTime::currentDateTimeUtc(), QUuid::createUuid().toString(QUuid::Id128)));
+    QString base = requested;
+    int suffix = 0;
+    while (QFileInfo::exists(base + ".session") || QFileInfo::exists(base + settings.logExtension)
+        || QFileInfo::exists(base + ".meta") || QFileInfo::exists(base + settings.rawLogExtension)
+        || QFileInfo::exists(base + ".lock")) {
+        base = requested + "-" + QString::number(++suffix);
+    }
+    logBase = base;
     logger = new LogWorker(settings, base, this);
     connect(logger, &LogWorker::fault, this, &SessionWorker::problem);
     logger->start();
-    emit logFileChanged(settings.logging ? base + ".raw" : QString{});
+    emit logFileChanged(settings.logging
+        ? base + (settings.rawLogging() ? settings.rawLogExtension : settings.logExtension) : QString{});
     emit problem("Session metadata: " + base + ".session");
-    if (settings.logging) emit problem("Raw capture: " + base + ".raw"
-        + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : "")
-        + (settings.textLog ? " (readable reception-UTC UTF-8 in .text)" : ""));
+    if (settings.logging) {
+        if (settings.rawLogging()) emit problem("Raw exact byte capture: " + base + settings.rawLogExtension
+            + (settings.timestampMetadata ? " (reception UTC offsets in .meta)" : ""));
+        if (settings.textLogging()) emit problem("Readable UTF-8 text capture: " + base + settings.logExtension
+            + (settings.textTimestamp ? " (host reception UTC timestamps)" : " (timestamps off)"));
+    }
 }
 void SessionWorker::poll() {
     initialize();
@@ -205,7 +292,8 @@ void SessionWorker::poll() {
                                   : "Selected device moved to another port");
     }
     if (current != SessionState::Waiting) return;
-    const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
+    const bool shouldReconnect = toolRestorePending
+        || (reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect);
     if (matches.size() != 1) {
         report(matches.isEmpty() ? "Selected device absent; no fallback port will be opened"
                                 : "Ambiguous USB identity; refusing to open any port");
@@ -226,6 +314,7 @@ void SessionWorker::poll() {
         emit identityBound(settings);
     }
     settings.port = chosen.port;
+    emit selectedPortChanged(chosen.port);
     transition(SessionState::Connecting); opening = true;
     // The bounded disk queue is ready before open can deliver any initial RX bytes.
     startLog();
@@ -236,12 +325,14 @@ void SessionWorker::poll() {
     if (ok) {
         attempts = 0; lastProblem.clear();
         reconnectAfterLoss = true;
+        toolRestorePending = false;
         logger->enqueueEvent("connected " + chosen.port, QDateTime::currentDateTimeUtc());
         transition(SessionState::Connected);
     } else {
         report(QString("Open failed (%1/%2): %3").arg(attempts).arg(settings.retryLimit).arg(error));
         logger->enqueueEvent("open failed: " + error, QDateTime::currentDateTimeUtc());
         if (attempts >= settings.retryLimit || !shouldReconnect) {
+            toolRestorePending = false;
             stopLog(!shouldReconnect ? "open failed; automatic reconnect disabled" : "retry limit reached");
             transition(SessionState::Disconnected);
             emit problem("Connection stopped. Press Connect / Resume to try again.");
@@ -253,7 +344,8 @@ void SessionWorker::lost(const QString &message) {
     if (logger) logger->enqueueEvent("interruption: " + message, QDateTime::currentDateTimeUtc());
     writeTimer->stop(); stopping = true; transport->close(); stopping = false;
     if (current != SessionState::ManuallyPaused && current != SessionState::Loaned) {
-        const bool shouldReconnect = reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect;
+        const bool shouldReconnect = toolRestorePending
+            || (reconnectAfterLoss ? settings.autoReconnect : settings.autoConnect);
         attempts = 0; transition(shouldReconnect ? SessionState::Waiting : SessionState::Disconnected);
         if (!shouldReconnect) stopLog("interrupted; automatic reconnect disabled");
         else if (settings.newLogOnReconnect) stopLog("interrupted; new log on reconnect");

@@ -1,5 +1,6 @@
 #include "config.h"
 #include "filter.h"
+#include "flashplan.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -11,9 +12,17 @@ QMap<QString, QString> Profile::values() const {
     auto number = [&](const char *key, qint64 value) { v[key] = QString::number(value); };
     auto flag = [&](const char *key, bool value) { v[key] = value ? "true" : "false"; };
     v["port"] = port; v["usbSerial"] = usbSerial; v["parity"] = parity;
+    v["esptoolPath"] = esptoolPath; v["esptoolChip"] = esptoolChip;
+    number("esptoolBaud", esptoolBaud);
     v["stopBits"] = stopBits; v["flowControl"] = flowControl; v["newline"] = newline;
     v["logDirectory"] = logDirectory;
     v["logName"] = logName;
+    v["logExtension"] = logExtension;
+    v["rawLogExtension"] = rawLogExtension;
+    v["logMode"] = logMode;
+    flag("terminalTimestamp", terminalTimestamp);
+    flag("textTimestamp", textTimestamp);
+    flag("timestampMilliseconds", timestampMilliseconds);
     v["filterText"] = filterText; v["filterMode"] = filterMode;
     flag("filterCase", filterCase); flag("filterHighlight", filterHighlight);
     number("logSeconds", logSeconds); number("displayQueueBytes", displayQueueBytes);
@@ -27,7 +36,6 @@ QMap<QString, QString> Profile::values() const {
     flag("autoConnect", autoConnect);
     flag("localEcho", localEcho); flag("follow", follow); flag("logging", logging);
     flag("timestampMetadata", timestampMetadata);
-    flag("textLog", textLog);
     return v;
 }
 
@@ -79,24 +87,43 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
         || !boolean("dtr", p.dtr) || !boolean("rts", p.rts)
         || !boolean("localEcho", p.localEcho) || !boolean("follow", p.follow)
         || !boolean("logging", p.logging) || !boolean("timestampMetadata", p.timestampMetadata)
-        || !boolean("textLog", p.textLog))
+        || !boolean("terminalTimestamp", p.terminalTimestamp)
+        || !boolean("textTimestamp", p.textTimestamp)
+        || !boolean("timestampMilliseconds", p.timestampMilliseconds))
         return false;
     if (!boolean("autoReconnect", p.autoReconnect)
         || !boolean("newLogOnReconnect", p.newLogOnReconnect)) return false;
     p.logName = v.value("logName", p.logName);
+    if (!v.contains("logMode") && v.contains("textLog")) {
+        bool legacyText = false;
+        if (!boolean("textLog", legacyText)) return false;
+        p.logMode = legacyText ? "both" : "raw";
+        if (legacyText) p.logExtension = ".text";
+    }
+    if (!choice("logMode", {"text", "raw", "both"}, p.logMode)) return false;
+    p.logExtension = v.value("logExtension", p.logExtension);
+    p.rawLogExtension = v.value("rawLogExtension", p.rawLogExtension);
+    for (const auto &extension : {p.logExtension, p.rawLogExtension}) {
+        if (!QRegularExpression("^\\.[A-Za-z0-9]{1,10}$").match(extension).hasMatch()
+            || QStringList{".meta", ".session", ".lock"}.contains(extension.toLower()))
+            return fail("log extension (dot and 1..10 letters/digits; .meta/.session/.lock reserved)");
+    }
+    if (p.logMode == "both" && p.logExtension.compare(p.rawLogExtension, Qt::CaseInsensitive) == 0)
+        return fail("log extensions (Text and Raw must differ in Both mode)");
     QString literal = p.logName;
     for (const auto &token : {"{profile}", "{date}", "{time}", "{port}", "{serial}", "{id}"})
         literal.replace(token, "");
     if (p.logName.isEmpty() || p.logName.size() > 160
         || literal.contains(QRegularExpression("[^A-Za-z0-9_-]")))
         return fail("logName (use letters, digits, _-, and {profile}/{date}/{time}/{port}/{serial}/{id})");
-    for (const auto &key : {"port", "usbSerial", "logDirectory", "filterText"}) {
+    for (const auto &key : {"port", "usbSerial", "esptoolPath", "logDirectory", "filterText"}) {
         const QString s = v.value(key, p.values().value(key));
         if (s.size() > 4096 || s.contains(QRegularExpression("[\\r\\n\\x00]"))
             || s != s.trimmed() || s.contains(QRegularExpression("\\s[;#]")))
             return fail(key);
         if (QString(key) == "port") p.port = s;
         else if (QString(key) == "usbSerial") p.usbSerial = s;
+        else if (QString(key) == "esptoolPath") p.esptoolPath = s;
         else if (QString(key) == "logDirectory") p.logDirectory = s;
         else p.filterText = s;
     }
@@ -107,7 +134,16 @@ bool Profile::fromValues(const QString &name, const QMap<QString, QString> &v,
             return false;
         }
     }
-    if (p.logDirectory.isEmpty()) return fail("logDirectory");
+    p.esptoolChip = v.value("esptoolChip");
+    if (!p.esptoolChip.isEmpty() && !FlashPlan::supportedChips().contains(p.esptoolChip))
+        return fail("esptoolChip");
+    if (!v.value("esptoolBaud", "0").isEmpty()) {
+        bool ok = false;
+        const int overrideBaud = v.value("esptoolBaud", "0").toInt(&ok);
+        if (!ok || overrideBaud < 0 || overrideBaud > 4000000
+            || (overrideBaud != 0 && overrideBaud < 1200)) return fail("esptoolBaud");
+        p.esptoolBaud = overrideBaud;
+    }
     if ((!p.usbSerial.isEmpty() && (p.vid < 0 || p.pid < 0))
         || (p.usbSerial.isEmpty() && (p.vid >= 0 || p.pid >= 0)))
         return fail("USB identity (serial, VID and PID must all be present or all absent)");
@@ -122,7 +158,9 @@ static QString valuePart(const QString &s) {
 bool IniFile::load(const QString &file, QString &error) {
     QFile input(file);
     if (!input.exists()) {
-        path = file; lines.clear(); profiles = {Profile{}}; utf8Bom = crlf = false; return true;
+        path = file; lines.clear(); profiles = {Profile{}};
+        defaultLogDirectory = "logs"; esptoolPath.clear(); esptoolDefaultChip.clear();
+        esptoolBaud = 460800; confirmReset = true; utf8Bom = crlf = false; return true;
     }
     if (!input.open(QIODevice::ReadOnly)) { error = input.errorString(); return false; }
     if (input.size() > 4194304) { error = "INI exceeds 4 MiB size limit"; return false; }
@@ -174,7 +212,72 @@ bool IniFile::load(const QString &file, QString &error) {
         result << p;
     }
     if (result.isEmpty()) result << Profile{};
+    const auto globalApp = sections.value("app");
+    const auto globalEsptool = sections.value("esptool");
+    QString defaultDirectory = globalApp.value("defaultLogDirectory");
+    if (!globalApp.contains("defaultLogDirectory")) {
+        const QString first = result.first().logDirectory;
+        bool shared = !first.isEmpty();
+        for (const auto &profile : result) shared = shared && profile.logDirectory == first;
+        if (shared) {
+            defaultDirectory = first;
+            for (auto &profile : result) profile.logDirectory.clear();
+        } else defaultDirectory = "logs";
+    }
+    if (defaultDirectory.isEmpty() || defaultDirectory.size() > 4096
+        || defaultDirectory.contains(QRegularExpression("[\\r\\n\\x00]"))
+        || defaultDirectory != defaultDirectory.trimmed()
+        || defaultDirectory.contains(QRegularExpression("\\s[;#]"))) {
+        error = "Invalid app/defaultLogDirectory.";
+        return false;
+    }
+    QString toolPath = globalEsptool.value("path");
+    QString chip = globalEsptool.value("defaultChip");
+    bool baudOk = true;
+    int toolBaud = globalEsptool.value("baud", "460800").toInt(&baudOk);
+    if (globalEsptool.contains("baud") && (!baudOk || toolBaud < 1200 || toolBaud > 4000000)) {
+        error = "Invalid esptool/baud.";
+        return false;
+    }
+    if (toolPath.size() > 4096 || toolPath != toolPath.trimmed()
+        || toolPath.contains(QRegularExpression("[\\r\\n\\x00]"))
+        || toolPath.contains(QRegularExpression("\\s[;#]"))) {
+        error = "Invalid esptool/path.";
+        return false;
+    }
+    if (!chip.isEmpty() && !FlashPlan::supportedChips().contains(chip)) {
+        error = "Invalid esptool/defaultChip.";
+        return false;
+    }
+    if (!globalEsptool.contains("path")) {
+        const QString first = result.first().esptoolPath;
+        bool shared = !first.isEmpty();
+        for (const auto &profile : result) shared = shared && profile.esptoolPath == first;
+        if (shared) {
+            toolPath = first;
+            for (auto &profile : result) profile.esptoolPath.clear();
+        }
+    }
+    const auto warnings = sections.value("warnings");
+    bool confirmResetValue = true;
+    if (warnings.contains("confirmReset")) {
+        const auto value = warnings.value("confirmReset");
+        if (value != "true" && value != "false") {
+            error = "Invalid warnings/confirmReset.";
+            return false;
+        }
+        confirmResetValue = value == "true";
+    }
+    for (auto &profile : result) {
+        if (!profile.esptoolChip.isEmpty() && !FlashPlan::supportedChips().contains(profile.esptoolChip)) {
+            error = "Profile '" + profile.name + "': invalid esptoolChip.";
+            return false;
+        }
+    }
     path = file; lines = parsedLines; profiles = result;
+    defaultLogDirectory = defaultDirectory;
+    esptoolPath = toolPath; esptoolDefaultChip = chip; esptoolBaud = toolBaud;
+    confirmReset = confirmResetValue;
     utf8Bom = bom; crlf = bytes.contains("\r\n"); return true;
 }
 
@@ -188,8 +291,35 @@ static bool atomicWrite(const QString &path, const QByteArray &data, QString &er
 }
 
 bool IniFile::save(QString &error) {
+    if (defaultLogDirectory.isEmpty() || defaultLogDirectory.size() > 4096
+        || defaultLogDirectory != defaultLogDirectory.trimmed()
+        || defaultLogDirectory.contains(QRegularExpression("[\\r\\n\\x00]"))
+        || defaultLogDirectory.contains(QRegularExpression("\\s[;#]"))) {
+        error = "Invalid app/defaultLogDirectory.";
+        return false;
+    }
+    if (esptoolPath.size() > 4096 || esptoolPath != esptoolPath.trimmed()
+        || esptoolPath.contains(QRegularExpression("[\\r\\n\\x00]"))
+        || esptoolPath.contains(QRegularExpression("\\s[;#]"))) {
+        error = "Invalid esptool/path.";
+        return false;
+    }
+    if (!esptoolDefaultChip.isEmpty()
+        && !FlashPlan::supportedChips().contains(esptoolDefaultChip)) {
+        error = "Invalid esptool/defaultChip.";
+        return false;
+    }
+    if (esptoolBaud < 1200 || esptoolBaud > 4000000) {
+        error = "Invalid esptool/baud.";
+        return false;
+    }
     QMap<QString, QMap<QString, QString>> updates;
     updates["app"]["format"] = "1";
+    updates["app"]["defaultLogDirectory"] = defaultLogDirectory;
+    updates["esptool"]["path"] = esptoolPath;
+    updates["esptool"]["defaultChip"] = esptoolDefaultChip;
+    updates["esptool"]["baud"] = QString::number(esptoolBaud);
+    updates["warnings"]["confirmReset"] = confirmReset ? "true" : "false";
     QSet<QString> names;
     for (const Profile &p : profiles) {
         Profile validated;

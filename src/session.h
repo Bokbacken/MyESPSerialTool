@@ -52,12 +52,15 @@ QString stateName(SessionState state);
 // One bounded mailbox per window avoids an unbounded queued GUI event per RX chunk.
 class DisplayBuffer {
 public:
-    void append(const QByteArray &bytes);
+    struct Record { QByteArray bytes; QDateTime received; };
+    void append(const QByteArray &bytes, const QDateTime &received = QDateTime::currentDateTimeUtc());
     QByteArray take(quint64 &droppedBytes);
+    QVector<Record> takeRecords(quint64 &droppedBytes);
     void setLimit(qsizetype bytes);
 private:
     QMutex mutex;
-    QByteArray buffer;
+    QVector<Record> records;
+    qsizetype bufferedBytes = 0;
     quint64 dropped = 0;
     qsizetype limit = 262144;
 };
@@ -73,8 +76,11 @@ public:
 public slots:
     void monitor();
     void configure(const Profile &profile, const QString &logDirectory);
+    bool prepareTool(QString &error);
+    void finishTool();
     void resume();
     void pause();
+    void splitLog();
     void setReadOnly(bool readOnly);
     void setAutoReconnect(bool enabled);
     void send(const QByteArray &bytes);
@@ -82,20 +88,24 @@ public slots:
     void shutdown();
 signals:
     void portsAvailable(const QStringList &ports);
+    void selectedPortChanged(const QString &port);
     void stateChanged(SessionState state);
     void problem(const QString &message);
     void identityBound(const Profile &profile);
     void logFileChanged(const QString &rawPath);
+    void logSplit(const QString &previousBase);
     void sent(const QByteArray &bytes);
+    void toolCancelRequested();
 private:
     SerialTransport *transport;
     std::shared_ptr<DisplayBuffer> display;
     QTimer *pollTimer = nullptr, *writeTimer = nullptr;
     Profile settings;
-    QString logDirectory, lastProblem;
+    QString logDirectory, lastProblem, logBase;
     SessionState current = SessionState::Disconnected;
     int attempts = 0;
     bool initialized = false, opening = false, stopping = false, reconnectAfterLoss = false;
+    bool restoreAfterTool = false, manualPauseDuringTool = false, toolRestorePending = false;
     LogWorker *logger = nullptr;
     void initialize();
     void transition(SessionState state);

@@ -138,7 +138,7 @@ private slots:
     }
     void profileAndRawLogRemainIndependent() {
         QTemporaryDir directory; QVERIFY(directory.isValid());
-        Profile p; p.filterMode = "expression"; p.filterText = "\"error*\" && temp > 20";
+        Profile p; p.logMode = "raw"; p.filterMode = "expression"; p.filterText = "\"error*\" && temp > 20";
         p.filterCase = true; p.filterHighlight = true; p.logging = true;
         IniFile ini; QString error;
         QVERIFY(ini.load(directory.filePath("settings.ini"), error));

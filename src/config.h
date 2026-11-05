@@ -6,6 +6,8 @@
 struct Profile {
     QString name = QStringLiteral("ESP");
     QString port, usbSerial;
+    QString esptoolPath, esptoolChip;
+    int esptoolBaud = 0;
     int baud = 115200, dataBits = 8, vid = -1, pid = -1;
     QString parity = QStringLiteral("none"), stopBits = QStringLiteral("1");
     QString flowControl = QStringLiteral("none"), newline = QStringLiteral("lf");
@@ -15,9 +17,15 @@ struct Profile {
     QString filterText, filterMode = QStringLiteral("text");
     bool filterCase = false, filterHighlight = false;
     int writeTimeoutMs = 2000, retryLimit = 5, terminalRows = 2000, lineColumns = 4096;
-    bool logging = false, timestampMetadata = false, textLog = false;
-    QString logDirectory = QStringLiteral("logs");
+    bool logging = false, timestampMetadata = false;
+    QString logDirectory;
     QString logName = QStringLiteral("{profile}-{date}-{time}-{id}");
+    QString logExtension = QStringLiteral(".log");
+    QString rawLogExtension = QStringLiteral(".raw");
+    QString logMode = QStringLiteral("text");
+    bool rawLogging() const { return logMode == "raw" || logMode == "both"; }
+    bool textLogging() const { return logMode == "text" || logMode == "both"; }
+    bool terminalTimestamp = false, textTimestamp = false, timestampMilliseconds = false;
     int logSeconds = 0, displayQueueBytes = 262144;
     qint64 logBytes = 10485760, logQueueBytes = 4194304;
     int logRetention = 5;
@@ -31,6 +39,10 @@ class IniFile {
 public:
     QString path;
     QList<Profile> profiles;
+    QString defaultLogDirectory = QStringLiteral("logs");
+    QString esptoolPath, esptoolDefaultChip;
+    int esptoolBaud = 460800;
+    bool confirmReset = true;
     bool load(const QString &file, QString &error);
     bool save(QString &error);
 private:
